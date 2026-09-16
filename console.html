@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>企业级 LLM 实操平台</title>
+<style>
+:root{
+  --bg:#0d1117; --bg2:#0a0e14; --panel:#161b22; --panel2:#1c2128;
+  --border:#30363d; --border2:#21262d; --text:#e6edf3; --muted:#8b949e;
+  --blue:#58a6ff; --cyan:#39c5cf; --green:#3fb950; --orange:#d29922;
+  --red:#f85149; --purple:#bc8cff; --pink:#db61a2; --yellow:#e3b341;
+  --mono:ui-monospace,"SFMono-Regular","Cascadia Code",Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6;font-size:15px;min-height:100vh}
+a{color:var(--blue);text-decoration:none}
+.topbar{position:sticky;top:0;z-index:100;background:rgba(13,17,23,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:0 24px}
+.topbar-inner{max-width:1360px;margin:0 auto;display:flex;align-items:center;height:56px;gap:10px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;white-space:nowrap;margin-right:6px}
+.logo .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));box-shadow:0 0 12px var(--blue)}
+.logo .sub{font-weight:400;font-size:11.5px;color:var(--muted);margin-left:4px}
+.nav{display:flex;gap:2px;overflow-x:auto;flex:1;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav a{color:var(--muted);padding:6px 14px;border-radius:8px;font-size:13.5px;white-space:nowrap;transition:.15s;cursor:pointer}
+.nav a:hover{color:var(--text);background:var(--panel2)}
+.nav a.active{color:#fff;background:var(--panel2);outline:1px solid var(--border)}
+.status-pill{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);white-space:nowrap}
+.status-pill .sdot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.wrap{max-width:1360px;margin:0 auto;padding:22px 24px 60px}
+section.tab{display:none;animation:fade .25s ease}
+section.tab.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.hero{margin-bottom:20px}
+.hero h1{font-size:24px;font-weight:800;letter-spacing:-.3px}
+.hero p{color:var(--muted);margin-top:4px;font-size:14px}
+
+/* 总览 */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+@media(max-width:900px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px}
+.stat .sv{font-size:28px;font-weight:800;font-family:var(--mono)}
+.stat .sl{font-size:12.5px;color:var(--muted);margin-top:2px}
+.arch{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:18px}
+.arch h3{font-size:14px;font-weight:700;margin-bottom:16px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.arch-flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center}
+.arch-box{border:1px solid var(--border);border-radius:10px;padding:14px 18px;background:var(--bg2);min-width:130px;text-align:center}
+.arch-box .at{font-weight:700;font-size:13.5px}
+.arch-box .ad{font-size:11px;color:var(--muted);margin-top:4px}
+.arch-arrow{color:var(--muted);font-size:20px}
+.scene-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:900px){.scene-cards{grid-template-columns:1fr}}
+.scene-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px}
+.scene-card .se{font-size:28px}
+.scene-card h3{font-size:15px;font-weight:700;margin:8px 0 4px}
+.scene-card p{font-size:12.5px;color:var(--muted)}
+.scene-card .mech{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+
+/* 通用卡片 */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px}
+.card h3{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.chip{font-size:11.5px;padding:3px 10px;border-radius:6px;border:1px solid;font-weight:600;white-space:nowrap}
+.c-blue{background:rgba(88,166,255,.14);color:var(--blue);border-color:rgba(88,166,255,.35)}
+.c-purple{background:rgba(188,140,255,.14);color:var(--purple);border-color:rgba(188,140,255,.35)}
+.c-green{background:rgba(63,185,80,.14);color:var(--green);border-color:rgba(63,185,80,.35)}
+.c-orange{background:rgba(210,153,34,.14);color:var(--orange);border-color:rgba(210,153,34,.35)}
+.c-red{background:rgba(248,81,73,.14);color:var(--red);border-color:rgba(248,81,73,.35)}
+.c-cyan{background:rgba(57,197,207,.14);color:var(--cyan);border-color:rgba(57,197,207,.35)}
+.c-pink{background:rgba(219,97,162,.14);color:var(--pink);border-color:rgba(219,97,162,.35)}
+
+/* 表单 */
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:600}
+.field input,.field select,.field textarea{width:100%;padding:9px 12px;font-size:14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;color:var(--text);outline:none;font-family:var(--mono)}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--blue)}
+.field .hint{font-size:11.5px;color:var(--muted);margin-top:4px}
+.field-row{display:flex;gap:10px}
+.field-row .field{flex:1}
+input[type=range]{width:100%;accent-color:var(--orange)}
+.range-val{font-family:var(--mono);color:var(--orange);font-weight:700}
+
+.btn{width:100%;padding:12px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--blue),var(--purple));border:none;border-radius:10px;cursor:pointer;transition:.15s}
+.btn:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.sec{background:var(--panel2);color:var(--text);border:1px solid var(--border);font-weight:600}
+.btn-row{display:flex;gap:10px}
+.btn-row .btn{flex:1}
+.preset{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+.preset button{font-size:11.5px;padding:4px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer}
+.preset button:hover{color:var(--text);border-color:var(--blue)}
+
+/* 主布局 */
+.main-grid{display:grid;grid-template-columns:360px 1fr;gap:18px;align-items:start}
+@media(max-width:920px){.main-grid{grid-template-columns:1fr}}
+.qa-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+@media(max-width:920px){.qa-grid{grid-template-columns:1fr}}
+
+/* 熔断指示灯 */
+.breaker{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:14px}
+.breaker .lamp{width:14px;height:14px;border-radius:50%;flex:none;box-shadow:0 0 10px currentColor}
+.breaker .binfo{flex:1;font-size:12.5px}
+.breaker .bstate{font-weight:800;font-size:14px}
+.lamp-closed{background:var(--green);color:var(--green)}
+.lamp-open{background:var(--red);color:var(--red)}
+.lamp-half{background:var(--yellow);color:var(--yellow)}
+
+/* 日志终端 */
+.terminal{background:#0a0e14;border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.terminal-head{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--panel2);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
+.terminal-head .tdot{width:10px;height:10px;border-radius:50%}
+.terminal-body{height:380px;overflow-y:auto;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.7}
+.log-line{white-space:pre-wrap;word-break:break-all;animation:logIn .15s ease}
+@keyframes logIn{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
+.log-empty{color:var(--muted);font-style:italic}
+.lg-step{color:var(--green)} .lg-tool{color:var(--blue)} .lg-retry{color:var(--yellow)}
+.lg-comp{color:var(--pink)} .lg-idem{color:var(--cyan)} .lg-fail{color:var(--red)}
+.lg-fallback{color:var(--orange)} .lg-default{color:var(--muted)}
+
+/* 结果 */
+.result{border-left:3px solid var(--green);background:var(--bg2);border-radius:8px;padding:14px 16px;margin-top:14px;display:none}
+.result.show{display:block}
+.result.err{border-left-color:var(--red)}
+.result .rhead{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.result .ritem{font-size:13px;margin:4px 0}
+.result .ritem b{color:var(--muted);font-weight:600;margin-right:8px}
+.result .rans{font-size:13.5px;color:var(--cyan);margin-top:8px;padding:8px 10px;background:rgba(57,197,207,.08);border-radius:6px;line-height:1.9}
+.result mark{background:rgba(226,179,65,.35);color:var(--text);padding:0 2px;border-radius:3px}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border2)}
+th{color:var(--muted);font-weight:600;font-size:12px}
+td.num{font-family:var(--mono)}
+tr:hover td{background:rgba(255,255,255,.02)}
+.bar{height:8px;background:var(--border2);border-radius:4px;overflow:hidden;min-width:60px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--purple))}
+
+/* 检索命中 */
+.hit{border:1px solid var(--border2);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--bg2)}
+.hit .ht{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.hit .ht b{font-size:13.5px}
+.hit .ht .score{font-family:var(--mono);font-size:11.5px;color:var(--orange)}
+.hit p{font-size:12.5px;color:var(--muted);line-height:1.6}
+.hit p mark{background:rgba(226,179,65,.35);color:var(--text);padding:0 2px;border-radius:3px}
+.hit-click .ht{cursor:pointer}
+.hit-click .ht b::after{content:'▾ 点击预览关键位置';font-size:11px;color:var(--cyan);font-weight:400;margin-left:8px}
+.hit-click.expanded .ht b::after{content:'▴ 收起预览'}
+.doc-preview{margin-top:8px;border-top:1px dashed var(--border2);padding-top:8px}
+.pv-head{font-size:12px;color:var(--muted);margin-bottom:6px}
+.pv-head b{color:var(--cyan)}
+.pv-row{padding:5px 0;border-bottom:1px solid var(--border2)}
+.pv-row:last-child{border-bottom:none}
+.pv-row p{font-size:12.5px;color:var(--text);margin-top:3px;line-height:1.7}
+.kw{display:inline-block;font-size:12px;padding:3px 11px;margin:3px 6px 3px 0;border-radius:999px;background:rgba(226,179,65,.16);border:1px solid rgba(226,179,65,.45);color:var(--yellow);font-weight:600}
+.kw-row{margin-top:8px}
+.preview-box{background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--muted);line-height:1.7;max-height:180px;overflow-y:auto}
+.preview-box mark{background:rgba(226,179,65,.35);color:var(--text);padding:0 2px;border-radius:3px}
+
+/* 审计 */
+.audit-line{display:flex;gap:12px;padding:9px 12px;border-bottom:1px solid var(--border2);font-size:12.5px;font-family:var(--mono)}
+.audit-line .at{color:var(--muted);flex:none}
+.audit-line .aa{color:var(--blue);flex:none;min-width:90px}
+.audit-line .ad{flex:1;color:var(--muted)}
+.audit-line .ar{flex:none}
+.audit-line .ar.ok{color:var(--green)} .audit-line .ar.err{color:var(--red)}
+.empty{color:var(--muted);font-style:italic;text-align:center;padding:30px}
+
+/* 工具 schema */
+pre.schema{background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:12px;font-size:11.5px;overflow-x:auto;font-family:var(--mono);color:var(--cyan);line-height:1.5}
+details{margin-top:14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
+summary{cursor:pointer;padding:12px 16px;font-weight:600;font-size:13.5px;user-select:none;color:var(--muted)}
+summary:hover{color:var(--text)}
+details[open] summary{border-bottom:1px solid var(--border2)}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-inner">
+  <div class="logo"><span class="dot"></span>企业级 LLM 实操平台<span class="sub">RAG 底座 × Agent 引擎 × AI 直连检索</span></div>
+  <div class="nav" id="nav">
+    <a data-tab="overview" class="active">总览</a>
+    <a data-tab="assistant">智能助手</a>
+    <a data-tab="ai">AI 智能检索</a>
+    <a data-tab="rag">RAG 知识底座</a>
+    <a data-tab="agents">Agent 决策引擎</a>
+    <a data-tab="ml">模型工程</a>
+    <a data-tab="governance">企业治理</a>
+  </div>
+  <div class="status-pill"><span class="sdot" id="sdot"></span><span id="sstat">连接中…</span></div>
+</div></div>
+
+<div class="wrap">
+
+<!-- ============ 总览 ============ -->
+<section class="tab active" id="tab-overview">
+  <div class="hero"><h1>企业级 LLM 应用 · 统一实操平台</h1>
+  <p>电商导购 · 金融投研 · 企业办公 三场景，覆盖「知识检索 → 智能决策 → 合规治理」全链路闭环。</p></div>
+  <div class="stat-grid" id="statGrid"></div>
+  <div class="arch"><h3>平台架构：知识底座 + 决策引擎 双核闭环</h3>
+    <div class="arch-flow">
+      <div class="arch-box"><div class="at">接入层</div><div class="ad">统一工作台 / API</div></div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-box" style="border-color:var(--purple)"><div class="at" style="color:var(--purple)">RAG 知识底座</div><div class="ad">切片·混合检索·质量基线</div></div>
+      <span class="arch-arrow">⇄</span>
+      <div class="arch-box" style="border-color:var(--blue)"><div class="at" style="color:var(--blue)">Agent 决策引擎</div><div class="ad">DAG·熔断·Saga·幂等</div></div>
+      <span class="arch-arrow">→</span>
+      <div class="arch-box"><div class="at">治理层</div><div class="ad">鉴权·审计·合规</div></div>
+    </div>
+  </div>
+  <div class="scene-cards">
+    <div class="scene-card"><div class="se">🛒</div><h3>电商导购</h3><p>图文混排 + 多模态检索 · 退款审批条件分支</p>
+      <div class="mech"><span class="chip c-cyan">多模态检索</span><span class="chip c-blue">条件分支</span><span class="chip c-green">幂等</span></div></div>
+    <div class="scene-card"><div class="se">📊</div><h3>金融投研</h3><p>PDF 表格 + 合规溯源 · 合规熔断机制</p>
+      <div class="mech"><span class="chip c-purple">PDF 表格</span><span class="chip c-red">合规熔断</span><span class="chip c-orange">溯源</span></div></div>
+    <div class="scene-card"><div class="se">🏢</div><h3>企业办公</h3><p>多格式 + 权限隔离 · 跨系统 Saga 事务</p>
+      <div class="mech"><span class="chip c-pink">权限隔离</span><span class="chip c-purple">Saga</span><span class="chip c-cyan">并行汇聚</span></div></div>
+  </div>
+</section>
+
+<!-- ============ 智能助手（端到端闭环） ============ -->
+<section class="tab" id="tab-assistant">
+  <div class="hero"><h1>智能助手 · 端到端闭环</h1>
+  <p>输入业务问题，平台自动完成：意图识别 → RAG 混合检索 → 证据生成 → 合规闸门（金融熔断）→ 交付。</p></div>
+  <div class="qa-grid">
+    <div class="card">
+      <h3>提问</h3>
+      <div class="field"><label>业务问题</label>
+        <textarea id="qaQuery" rows="3" placeholder="例如：星辰科技 2025 年营业收入是多少？"></textarea></div>
+      <div class="field"><label>指定场景（可选，留空自动识别）</label>
+        <select id="qaScene"><option value="">自动识别</option>
+          <option value="ecommerce">电商导购</option>
+          <option value="finance">金融投研</option>
+          <option value="office">企业办公</option></select></div>
+      <div class="btn-row"><button class="btn" id="qaRun">运行</button></div>
+      <div class="preset" id="qaPreset">
+        <button>星辰科技 2025 年营业收入是多少？</button>
+        <button>N 型 TOPCon 渗透率预计多少？</button>
+        <button>一线城市差旅住宿标准？</button>
+        <button>这款空调的能效等级？</button>
+      </div>
+    </div>
+    <div>
+      <div class="breaker" id="qaBreaker" style="display:none">
+        <div class="lamp" id="qaLamp"></div>
+        <div class="binfo"><div class="bstate" id="qaBstate"></div><div id="qaBinfo"></div></div>
+      </div>
+      <div class="result" id="qaResult"><div class="rhead">回答</div></div>
+      <div class="terminal"><div class="terminal-head"><span class="tdot" style="background:var(--red)"></span><span class="tdot" style="background:var(--yellow)"></span><span class="tdot" style="background:var(--green)"></span>执行日志</div>
+        <div class="terminal-body" id="qaLogs"><div class="log-empty">等待运行…</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AI 智能检索（直连 DeepSeek 等主流 API） ============ -->
+<section class="tab" id="tab-ai">
+  <div class="hero"><h1>AI 智能检索 · 直连主流大模型</h1>
+  <p>检索不依赖本地向量库，直接调用 DeepSeek 等 OpenAI 兼容大模型 API。上传本地文件即可让模型基于文件内容作答；API Key 仅保存在你的浏览器、不会上传到服务器。</p></div>
+
+  <div class="card"><h3>🔑 API 配置</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">填写你的 DeepSeek（或任意 OpenAI 兼容）凭据，保存到本地浏览器。默认 Base URL <code>https://api.deepseek.com</code>、模型 <code>deepseek-chat</code>。</p>
+    <div class="field-row" style="gap:12px;flex-wrap:wrap">
+      <div class="field" style="flex:1;min-width:220px"><label>API Key</label><input type="password" id="aiKey" placeholder="sk-..."></div>
+      <div class="field" style="flex:1;min-width:220px"><label>Base URL</label><input type="text" id="aiBase" placeholder="https://api.deepseek.com"></div>
+      <div class="field" style="flex:0 0 180px"><label>模型名</label><input type="text" id="aiModel" placeholder="deepseek-chat"></div>
+    </div>
+    <div class="btn-row"><button class="btn" id="aiSave">保存配置</button><button class="btn sec" id="aiClear">清除</button><span style="font-size:12px;color:var(--muted);margin-left:10px" id="aiCfgStatus"></span></div>
+    <div class="preset" id="aiPreset">
+      <button data-k="deepseek">DeepSeek</button>
+      <button data-k="openai">OpenAI</button>
+      <button data-k="moonshot">Kimi（Moonshot）</button>
+      <button data-k="qwen">通义千问</button>
+    </div>
+  </div>
+
+  <div class="qa-grid">
+    <div class="card"><h3>💬 AI 智能问答</h3>
+      <div class="field"><label>问题</label><textarea id="aiQuery" rows="3" placeholder="例如：2025 年大模型技术有哪些趋势？"></textarea></div>
+      <div class="btn-row"><button class="btn" id="aiAsk">提问</button></div>
+      <div class="result" id="aiAnswer"><div class="rhead">回答</div></div>
+    </div>
+    <div class="card"><h3>📎 本地文件检索</h3>
+      <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">上传本地文档（txt / md / docx / xlsx / pptx / pdf / csv / json / html），模型基于文件内容回答，无需构建向量索引。</p>
+      <div class="field"><label>选择文件</label><input type="file" id="aiFile" accept=".txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.docx,.xlsx,.pptx,.pdf"></div>
+      <div class="field"><label>针对文件提问</label><textarea id="aiFileQuery" rows="2" placeholder="例如：这份文件的营收数据是多少？（留空则概括全文）"></textarea></div>
+      <div class="btn-row"><button class="btn" id="aiFileRun">上传并检索</button><span style="font-size:12px;color:var(--muted)" id="aiFileStatus"></span></div>
+      <div class="result" id="aiFileAnswer"><div class="rhead">检索结果</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ RAG 知识底座 ============ -->
+<section class="tab" id="tab-rag">
+  <div class="hero"><h1>RAG 知识底座</h1>
+  <p>三场景知识库 · 5 种切片策略对比 · 混合检索（BM25 + 稠密 + RRF）· 质量基线（Recall@K / MRR / nDCG）。</p></div>
+
+  <div class="card"><h3>📥 文档上传与多格式解析</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">支持图文混排（MD/HTML 含图片占位）· PDF 表格 · Word/Excel/PPT/CSV/JSON 多格式自动解析，上传后实时纳入检索索引并按场景隔离。</p>
+    <div class="field-row">
+      <div class="field" style="flex:1"><label>选择文件</label>
+        <input type="file" id="uploadFile" accept=".txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg"></div>
+      <div class="field"><label>场景</label><select id="uploadScene">
+        <option value="auto">自动识别</option><option value="ecommerce">电商导购</option>
+        <option value="finance">金融投研</option><option value="office">企业办公</option></select></div>
+    </div>
+    <div class="btn-row"><button class="btn" id="uploadRun">上传并解析</button><span style="font-size:12px;color:var(--muted);margin-left:10px" id="uploadStatus"></span></div>
+    <div id="uploadResult" style="margin-top:12px"></div>
+
+    <div style="border-top:1px solid var(--border2);margin:16px 0"></div>
+    <h4 style="font-size:13px;color:var(--text);margin-bottom:8px">🔍 检索分析结果（关键词高亮）</h4>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">上传文档后自动检索分析；也可输入关键词或问题，对已入库知识（含刚上传文档）实时混合检索，命中关键词高亮。</p>
+    <div class="field-row">
+      <div class="field" style="flex:1"><label>查询</label><input id="analysisQuery" placeholder="例如：2025Q3 营收 / 快充功率 / 迟到扣款"></div>
+      <div class="field" style="max-width:180px"><label>场景</label><select id="analysisScene">
+        <option value="all">全部</option><option value="ecommerce">电商导购</option>
+        <option value="finance">金融投研</option><option value="office">企业办公</option></select></div>
+    </div>
+    <div class="btn-row"><button class="btn" id="analysisRun">检索分析</button></div>
+    <div id="analysisResult" style="margin-top:12px"><div class="empty">上传文档或输入关键词，查看检索分析结果与关键词高亮</div></div>
+  </div>
+
+  <div class="card"><h3>切片策略对比实验</h3>
+    <div class="btn-row"><button class="btn sec" id="chunkRun">运行切片对比实验</button></div>
+    <div id="chunkTable" style="margin-top:14px"><div class="empty">点击运行，实时计算 5 种切片策略的质量指标</div></div>
+  </div>
+
+  <div class="card"><h3>混合检索质量基线</h3>
+    <div class="btn-row"><button class="btn sec" id="evalRun">运行质量基线</button></div>
+    <div id="evalTable" style="margin-top:14px"><div class="empty">点击运行，对比 bm25 / dense / hybrid 三种方案</div></div>
+  </div>
+
+  <div class="card"><h3>实时混合检索（权限隔离）</h3>
+    <div class="field-row">
+      <div class="field"><label>查询</label><input id="ragQuery" placeholder="例如：2025 年营业收入"></div>
+      <div class="field"><label>场景</label><select id="ragScene">
+        <option value="all">全部</option><option value="finance">金融投研</option>
+        <option value="ecommerce">电商导购</option><option value="office">企业办公</option></select></div>
+      <div class="field"><label>模式</label><select id="ragMode">
+        <option value="hybrid">混合 RRF</option><option value="bm25">BM25</option>
+        <option value="dense">稠密 TF-IDF</option></select></div>
+    </div>
+    <div class="btn-row"><button class="btn" id="ragSearch">检索</button></div>
+    <div id="ragHits" style="margin-top:14px"><div class="empty">输入查询，实时检索知识库</div></div>
+  </div>
+</section>
+
+<!-- ============ Agent 决策引擎 ============ -->
+<section class="tab" id="tab-agents">
+  <div class="hero"><h1>Agent 决策引擎</h1>
+  <p>工具调用（Function Calling）· DAG 编排 · 条件分支 · 合规熔断 · Saga 补偿 · 幂等保障。</p></div>
+
+  <div class="card"><h3>工具注册表（Function Calling）</h3>
+    <div class="btn-row"><button class="btn sec" id="toolsRun">加载工具 Schema</button></div>
+    <div id="toolsTable" style="margin-top:14px"><div class="empty">点击加载 12 个工具的 Function Calling 声明与副作用分级</div></div>
+  </div>
+
+  <div class="main-grid">
+    <div class="card">
+      <h3>🛒 电商客服 Agent</h3>
+      <div class="field"><label>订单号</label><input id="ecOrder" value="O1001"></div>
+      <div class="field"><label>退款金额：<span class="range-val" id="ecAmtVal">¥300</span></label>
+        <input type="range" id="ecAmount" min="100" max="1000" step="50" value="300"></div>
+      <div class="hint" style="color:var(--muted);font-size:11.5px;margin-bottom:10px">&lt;¥500 自动退款 · ≥¥500 转人工审批</div>
+      <div class="btn-row"><button class="btn" id="ecRun">运行退款</button><button class="btn sec" id="ecRepeat">🔁 重复提交（幂等）</button></div>
+    </div>
+    <div>
+      <div class="breaker"><div class="lamp" id="ecLamp"></div><div class="binfo"><div class="bstate" id="ecBstate">待运行</div><div id="ecBinfo"></div></div></div>
+      <div class="terminal"><div class="terminal-head"><span class="tdot" style="background:var(--red)"></span><span class="tdot" style="background:var(--yellow)"></span><span class="tdot" style="background:var(--green)"></span>执行日志</div>
+        <div class="terminal-body" id="ecLogs"><div class="log-empty">等待运行…</div></div></div>
+      <div class="result" id="ecResult"><div class="rhead">结果</div></div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+    <div class="card">
+      <h3>📊 金融投研 Agent</h3>
+      <div class="field"><label>投研问题</label><input id="fnQuery" value="建议买入某标的"></div>
+      <div class="btn-row"><button class="btn" id="fnRun">运行投研</button><button class="btn sec" id="fnBurst">连续运行 ×4（触发熔断）</button></div>
+    </div>
+    <div>
+      <div class="breaker"><div class="lamp" id="fnLamp"></div><div class="binfo"><div class="bstate" id="fnBstate">CLOSED</div><div id="fnBinfo"></div></div></div>
+      <div class="terminal"><div class="terminal-head"><span class="tdot" style="background:var(--red)"></span><span class="tdot" style="background:var(--yellow)"></span><span class="tdot" style="background:var(--green)"></span>执行日志</div>
+        <div class="terminal-body" id="fnLogs"><div class="log-empty">等待运行…</div></div></div>
+      <div class="result" id="fnResult"><div class="rhead">结果</div></div>
+    </div>
+  </div>
+
+  <div class="main-grid">
+    <div class="card">
+      <h3>🏢 企业办公 Agent</h3>
+      <div class="field"><label>审批单号</label><input id="ofApproval" value="AP-001"></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ofFail" style="width:auto"> 注入「通知服务故障」触发 Saga 补偿</label></div>
+      <div class="btn-row"><button class="btn" id="ofRun">运行审批流</button></div>
+    </div>
+    <div>
+      <div class="terminal"><div class="terminal-head"><span class="tdot" style="background:var(--red)"></span><span class="tdot" style="background:var(--yellow)"></span><span class="tdot" style="background:var(--green)"></span>执行日志</div>
+        <div class="terminal-body" id="ofLogs"><div class="log-empty">等待运行…</div></div></div>
+      <div class="result" id="ofResult"><div class="rhead">结果</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 模型工程 ============ -->
+<section class="tab" id="tab-ml">
+  <div class="hero"><h1>模型工程全链路</h1>
+  <p>三场景模型层工程 + 离线评测 · A/B 测试 · 幻觉防御 · 可观测性，与 RAG（知识底座）、Agent（决策引擎）构成三核闭环。</p></div>
+
+  <div class="scene-cards" style="margin-bottom:16px" id="mlSceneCards"></div>
+
+  <div class="card"><h3>🛒 电商导购 · 准确率-延迟平衡（3 轮调优 40% → 78%）</h3>
+    <div class="btn-row"><button class="btn sec" id="mlTuningRun">运行 3 轮调优评测</button></div>
+    <div id="mlTuning" style="margin-top:14px"><div class="empty">点击运行，离线评测 3 个模型版本的准确率 / 延迟 / 成本</div></div>
+  </div>
+
+  <div class="card"><h3>📊 金融投研 · 6 条合规红线 + 引用合规率</h3>
+    <div class="field"><label>待检答案</label><textarea id="mlCompAnswer" rows="2">建议买入该标的，未来必将持续上涨，稳赚不赔。</textarea></div>
+    <div class="field"><label>引用模式</label><select id="mlCompCite">
+      <option value="none">无引用</option><option value="real">真实引用</option><option value="fake">含幻觉引用</option></select></div>
+    <div class="btn-row"><button class="btn" id="mlCompRun">扫描</button></div>
+    <div class="preset" id="mlCompPreset">
+      <button>建议买入该标的，未来必将持续上涨，稳赚不赔。</button>
+      <button>该标的营收同比增长 18.2%，估值处于历史中位。</button>
+    </div>
+    <div id="mlCompResult" style="margin-top:14px"></div>
+    <details style="margin-top:12px"><summary>查看 6 条合规红线定义</summary><div id="mlRedLines" style="padding:14px"></div></details>
+  </div>
+
+  <div class="card"><h3>🏢 企业办公 · P0/P1/P2 多意图路由 + 任务完成率</h3>
+    <div class="field"><label>用户请求</label><input id="mlRouteReq" value="帮我创建一份差旅审批单"></div>
+    <div class="btn-row"><button class="btn" id="mlRouteRun">路由</button></div>
+    <div class="preset" id="mlRoutePreset">
+      <button>帮我查询最近的报销标准</button>
+      <button>帮我创建一份差旅审批单</button>
+      <button>帮我删除这份机密文档</button>
+    </div>
+    <div id="mlRouteResult" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card"><h3>🧪 离线评测 · 黄金评测集 + 回归门禁</h3>
+    <div class="btn-row"><button class="btn sec" id="mlEvalRun">运行离线评测</button></div>
+    <div id="mlEval" style="margin-top:14px"><div class="empty">点击运行，三场景指标 + 回归门禁判定</div></div>
+  </div>
+
+  <div class="card"><h3>🔀 A/B 测试 · 分流 + 显著性 + 灰度放量</h3>
+    <div class="btn-row"><button class="btn sec" id="mlAbRun">运行 A/B 测试</button></div>
+    <div id="mlAb" style="margin-top:14px"><div class="empty">点击运行，按 user_id hash 分流并做显著性检验</div></div>
+  </div>
+
+  <div class="card"><h3>🛡️ 幻觉防御 · 分层检查</h3>
+    <div class="field-row">
+      <div class="field"><label>问题</label><input id="mlHallQuery" value="星辰科技 2025 年营业收入是多少？"></div>
+      <div class="field"><label>模式</label><select id="mlHallMode"><option value="grounded">有据可依（真实引用）</option><option value="hallucinated">注入幻觉引用</option></select></div>
+    </div>
+    <div class="btn-row"><button class="btn" id="mlHallRun">运行分层检查</button></div>
+    <div id="mlHall" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card"><h3>📡 可观测性 · trace + 指标 + 告警</h3>
+    <div class="btn-row"><button class="btn sec" id="mlObsRun">刷新观测面板</button></div>
+    <div id="mlObs" style="margin-top:14px"><div class="empty">点击刷新，查看指标 / 链路 trace / 告警</div></div>
+  </div>
+</section>
+
+<!-- ============ 企业治理 ============ -->
+<section class="tab" id="tab-governance">
+  <div class="hero"><h1>企业治理</h1>
+  <p>全量操作审计留痕 · 权限隔离 · 合规熔断状态。所有检索与 Agent 执行均记录在案。</p></div>
+  <div class="card"><h3>审计日志</h3>
+    <div class="btn-row"><button class="btn sec" id="auditRefresh">刷新审计日志</button></div>
+    <div id="auditList" style="margin-top:14px"><div class="empty">点击刷新查看审计日志</div></div>
+  </div>
+  <div class="card"><h3>权限隔离说明</h3>
+    <table>
+      <tr><th>场景</th><th>可见数据</th><th>隔离机制</th></tr>
+      <tr><td>金融投研</td><td>财报 / 研报 / 宏观文档</td><td>检索前按 scene 过滤 chunk，只返回金融切片</td></tr>
+      <tr><td>电商导购</td><td>商品 / 参数 / 营销文档</td><td>检索前按 scene 过滤 chunk，只返回电商切片</td></tr>
+      <tr><td>企业办公</td><td>制度 / 报销 / 项目文档</td><td>检索前按 scene 过滤 chunk，只返回办公切片</td></tr>
+    </table>
+  </div>
+</section>
+
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+function setTab(t){
+  document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active',a.dataset.tab===t));
+  document.querySelectorAll('section.tab').forEach(s=>s.classList.toggle('active',s.id==='tab-'+t));
+}
+document.querySelectorAll('.nav a').forEach(a=>a.onclick=()=>setTab(a.dataset.tab));
+
+async function post(path,obj){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});return r.json();}
+async function get(path){const r=await fetch(path);return r.json();}
+
+function logClass(line){
+  if(line.includes('完成'))return'lg-step';
+  if(line.includes('工具'))return'lg-tool';
+  if(line.includes('重试')||line.includes('↻'))return'lg-retry';
+  if(line.includes('补偿')||line.includes('⟲'))return'lg-comp';
+  if(line.includes('幂等'))return'lg-idem';
+  if(line.includes('失败')||line.includes('熔断')||line.includes('快速失败')||line.includes('拒绝'))return'lg-fail';
+  if(line.includes('兜底')||line.includes('降级'))return'lg-fallback';
+  return'lg-default';
+}
+function renderLogs(el,logs){
+  el.innerHTML=logs.length?'':'<div class="log-empty">无输出</div>';
+  logs.forEach(l=>{const d=document.createElement('div');d.className='log-line '+logClass(l);d.textContent=l;el.appendChild(d);});
+  el.scrollTop=el.scrollHeight;
+}
+function renderBreaker(lampEl,stateEl,infoEl,b){
+  if(!b){stateEl.textContent='—';infoEl.textContent='';lampEl.className='lamp';return;}
+  const map={closed:['CLOSED','lamp-closed','绿灯 · 正常'],open:['OPEN','lamp-open','红灯 · 快速失败'],half_open:['HALF_OPEN','lamp-half','黄灯 · 试探恢复']};
+  const [txt,cls,desc]=map[b.state]||[b.state,'lamp-closed',''];
+  stateEl.textContent=txt;lampEl.className='lamp '+cls;
+  infoEl.textContent=`失败 ${b.failures}/${b.threshold} · ${desc}`;
+}
+function renderResult(el,obj,isErr){
+  el.classList.add('show');el.classList.toggle('err',!!isErr);
+  let html='';
+  if(isErr){html='<div class="ritem" style="color:var(--red)">错误：'+obj.error+'</div>';}
+  else if(obj){html=Object.entries(obj).filter(([k])=>!['evidence','sources'].includes(k)).map(([k,v])=>{
+    if(v&&typeof v==='object')v=JSON.stringify(v);
+    return '<div class="ritem"><b>'+k+'</b>'+String(v)+'</div>';
+  }).join('');
+    if(obj.answer)html+='<div class="rans">'+obj.answer+'</div>';
+    if(obj.sources&&obj.sources.length)html+='<div class="ritem"><b>溯源</b>'+obj.sources.join('、')+'</div>';
+    if(obj.evidence)html+='<div class="ritem"><b>证据</b>'+obj.evidence+'</div>';
+  }
+  el.innerHTML='<div class="rhead">结果</div>'+html;
+}
+
+// 健康检查
+async function health(){
+  try{const h=await get('/api/health');$('#sstat').textContent=`在线 · ${h.docs} 文档 / ${h.chunks} 切片 / ${h.tools} 工具`;$('#sdot').style.background='var(--green)';}
+  catch(e){$('#sstat').textContent='离线';$('#sdot').style.background='var(--red)';}
+}
+health();
+
+// 总览
+async function overview(){
+  const o=await get('/api/overview');
+  const s=o.stats;
+  $('#statGrid').innerHTML=[
+    ['📄',s.docs,'知识文档'],
+    ['🧩',s.chunks,'检索切片'],
+    ['❓',s.qa,'黄金 QA'],
+    ['🔧',s.tools,'可调用工具'],
+  ].map(([e,v,l])=>'<div class="stat"><div class="sv">'+e+' '+v+'</div><div class="sl">'+l+'</div></div>').join('');
+}
+overview();
+
+// 智能助手
+function bindQaPreset(){
+  document.querySelectorAll('#qaPreset button').forEach(b=>b.onclick=()=>{$('#qaQuery').value=b.textContent;$('#qaScene').value='';});
+}
+bindQaPreset();
+// 关键词高亮：query 词与文本双向子串匹配（处理"年营业收入是多少"vs"营业收入"这类不连续情况）
+const QA_STOPWORDS=/是多少|多少|什么|怎么|如何|请问|哪些|怎么样/g;
+function qaHits(query,text){
+  const toks=(query.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]{2,}/g)||[]).filter(t=>t.length>=2);
+  const lower=text.toLowerCase(),hits=[];
+  toks.forEach(t=>{
+    if(/[a-z0-9]/.test(t)){ if(lower.indexOf(t)>=0)hits.push(t); return; }
+    t.replace(QA_STOPWORDS,'|').split('|').forEach(seg=>{
+      if(seg.length<2)return;
+      if(lower.indexOf(seg)>=0){hits.push(seg);return;}
+      for(let len=seg.length;len>=2;len--){          // 找该段在文本中出现的最长子串
+        let found=false;
+        for(let i=0;i+len<=seg.length;i++){
+          const sub=seg.substr(i,len);
+          if(lower.indexOf(sub)>=0){hits.push(sub);found=true;break;}
+        }
+        if(found)break;
+      }
+    });
+  });
+  return [...new Set(hits)].sort((a,b)=>b.length-a.length);
+}
+function hlAnswer(text,query){                        // 非重叠贪心打标，避免嵌套 mark
+  const hits=qaHits(query,text);
+  let parts=[text];
+  hits.forEach(h=>{
+    const hl=h.toLowerCase();
+    parts=parts.flatMap(p=>{
+      if(typeof p!=='string')return[p];
+      const low=p.toLowerCase(),res=[];let i=0;
+      while(i<p.length){
+        const idx=low.indexOf(hl,i);
+        if(idx<0){res.push(p.slice(i));break;}
+        if(idx>i)res.push(p.slice(i,idx));
+        res.push({s:p.slice(idx,idx+h.length)});
+        i=idx+h.length;
+      }
+      return res;
+    });
+  });
+  return parts.map(p=>typeof p==='string'?p:'<mark>'+p.s+'</mark>').join('');
+}
+// 引用条目自动分行：按「; [」边界拆分，每条引用一行
+function fmtCitations(text,query){
+  return String(text).split(/;\s*(?=\[)/).map(s=>s.trim()).filter(Boolean)
+    .map(l=>hlAnswer(l,query)).join('<br>');
+}
+$('#qaRun').onclick=async()=>{
+  const query=$('#qaQuery').value.trim();if(!query)return;
+  const scene=$('#qaScene').value;
+  $('#qaRun').disabled=true;$('#qaResult').classList.remove('show');
+  $('#qaBreaker').style.display='flex';
+  const d=await post('/api/agent/run',{scenario:'qa',params:{query,scene}});
+  $('#qaRun').disabled=false;
+  renderLogs($('#qaLogs'),d.logs);
+  renderBreaker($('#qaLamp'),$('#qaBstate'),$('#qaBinfo'),d.breaker);
+  const r=$('#qaResult');
+  r.classList.add('show');r.classList.remove('err');
+  if(d.ok&&d.result&&d.result.answer){
+    let html='<div class="rhead">回答</div><div class="rans">'+fmtCitations(d.result.answer,query)+'</div>';
+    if(d.result.sources&&d.result.sources.length)html+='<div class="ritem"><b>溯源</b>'+d.result.sources.join('、')+'</div>';
+    if(d.result.evidence)html+='<div class="ritem"><b>证据</b>'+fmtCitations(d.result.evidence,query)+'</div>';
+    r.innerHTML=html;
+  } else {
+    r.innerHTML='<div class="rhead">回答</div><div class="ritem" style="color:var(--red)">错误：'+(d.error||(d.result&&d.result.error)||'执行失败')+'</div>';
+  }
+};
+
+// AI 智能检索（直连 DeepSeek 等主流 API）
+const AI_KEY='ai_cfg';
+const AI_PRESETS={
+  deepseek:{base:'https://api.deepseek.com',model:'deepseek-chat'},
+  openai:{base:'https://api.openai.com/v1',model:'gpt-4o-mini'},
+  moonshot:{base:'https://api.moonshot.cn/v1',model:'moonshot-v1-8k'},
+  qwen:{base:'https://dashscope.aliyuncs.com/compatible-mode/v1',model:'qwen-plus'},
+};
+function aiCfg(){try{return JSON.parse(localStorage.getItem(AI_KEY)||'{}');}catch(e){return {};}}
+function aiLoadCfg(){const c=aiCfg();$('#aiKey').value=c.key||'';$('#aiBase').value=c.base||'';$('#aiModel').value=c.model||'';}
+document.querySelectorAll('#aiPreset button').forEach(b=>b.onclick=()=>{
+  const p=AI_PRESETS[b.getAttribute('data-k')];
+  if(p){$('#aiBase').value=p.base;$('#aiModel').value=p.model;}
+});
+$('#aiSave').onclick=()=>{
+  const c={key:$('#aiKey').value.trim(),base:$('#aiBase').value.trim(),model:$('#aiModel').value.trim()};
+  localStorage.setItem(AI_KEY,JSON.stringify(c));
+  $('#aiCfgStatus').textContent='已保存到本地浏览器（仅存于本机，不会上传）';
+};
+$('#aiClear').onclick=()=>{
+  localStorage.removeItem(AI_KEY);
+  $('#aiKey').value='';$('#aiBase').value='';$('#aiModel').value='';
+  $('#aiCfgStatus').textContent='已清除';
+};
+function renderAiAnswer(el,d){
+  if(d.ok&&d.answer){
+    el.innerHTML='<div class="rhead">回答</div><div class="rans">'+String(d.answer).replace(/\n/g,'<br>')+'</div>'+
+      (d.filename?'<div class="ritem"><b>文件</b>'+d.filename+' · '+d.format+' · '+d.context_chars+' 字符</div>':'');
+  } else {
+    el.innerHTML='<div class="rhead">回答</div><div class="ritem" style="color:var(--red)">'+(d.error||'调用失败')+'</div>';
+  }
+}
+$('#aiAsk').onclick=async()=>{
+  const query=$('#aiQuery').value.trim();if(!query)return;
+  const c=aiCfg();
+  if(!c.key){$('#aiAnswer').innerHTML='<div class="rhead">回答</div><div class="ritem" style="color:var(--orange)">请先在上方填写并保存 API Key</div>';return;}
+  $('#aiAsk').disabled=true;
+  $('#aiAnswer').innerHTML='<div class="rhead">回答</div><div class="empty">思考中…</div>';
+  const d=await post('/api/llm/retrieve',{api_key:c.key,base_url:c.base,model:c.model,query});
+  $('#aiAsk').disabled=false;
+  renderAiAnswer($('#aiAnswer'),d);
+};
+$('#aiFileRun').onclick=async()=>{
+  const f=$('#aiFile').files[0];
+  const query=$('#aiFileQuery').value.trim()||'请概括这份文件的主要内容';
+  const c=aiCfg();
+  if(!f){$('#aiFileStatus').textContent='请先选择文件';return;}
+  if(!c.key){$('#aiFileAnswer').innerHTML='<div class="rhead">检索结果</div><div class="ritem" style="color:var(--orange)">请先在上方填写并保存 API Key</div>';return;}
+  $('#aiFileStatus').textContent='解析并检索中…';
+  const b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.readAsDataURL(f);});
+  const d=await post('/api/llm/file_retrieve',{api_key:c.key,base_url:c.base,model:c.model,query,filename:f.name,data_base64:b64});
+  $('#aiFileStatus').textContent='';
+  renderAiAnswer($('#aiFileAnswer'),d);
+};
+aiLoadCfg();
+
+// RAG
+$('#chunkRun').onclick=async()=>{
+  $('#chunkRun').disabled=true;
+  const d=await post('/api/rag/chunking',{});
+  $('#chunkRun').disabled=false;
+  const rows=d.results.map(r=>'<tr><td><b>'+r.strategy+'</b><div style="font-size:11px;color:var(--muted)">'+r.desc+'</div></td>'+
+    '<td class="num">'+r['recall@1']+'</td><td class="num">'+r['recall@10']+'</td><td class="num">'+r.mrr+'</td>'+
+    '<td class="num">'+r['ndcg@5']+'</td><td class="num">'+r.integrity+'</td><td class="num">'+r.avg_chunks_per_doc+'</td></tr>').join('');
+  $('#chunkTable').innerHTML='<table><tr><th>策略</th><th>Recall@1</th><th>Recall@10</th><th>MRR</th><th>nDCG@5</th><th>完整性</th><th>平均块数</th></tr>'+rows+'</table>';
+};
+$('#evalRun').onclick=async()=>{
+  $('#evalRun').disabled=true;
+  const d=await post('/api/rag/eval',{});
+  $('#evalRun').disabled=false;
+  const rows=d.results.map(r=>'<tr><td><b>'+r.mode+'</b></td><td class="num">'+r['recall@1']+'</td><td class="num">'+r['recall@10']+'</td>'+
+    '<td class="num">'+r.mrr+'</td><td class="num">'+r['ndcg@5']+'</td></tr>').join('');
+  $('#evalTable').innerHTML='<table><tr><th>方案</th><th>Recall@1</th><th>Recall@10</th><th>MRR</th><th>nDCG@5</th></tr>'+rows+'</table>';
+};
+$('#ragSearch').onclick=async()=>{
+  const query=$('#ragQuery').value.trim();if(!query)return;
+  const d=await post('/api/rag/search',{query,scene:$('#ragScene').value,mode:$('#ragMode').value,top_k:5});
+  if(!d.ok){$('#ragHits').innerHTML='<div class="empty">'+d.error+'</div>';return;}
+  const hits=d.hits.map(h=>'<div class="hit"><div class="ht"><b>'+h.title+'</b><span class="chip c-'+h.scene+'">'+h.scene_name+'</span><span class="score">score='+h.score+'</span></div><p>'+h.highlighted+'</p></div>').join('');
+  $('#ragHits').innerHTML=(hits||'<div class="empty">无命中（可见切片 '+d.filtered_chunks+'/'+d.total_corpus_chunks+'）</div>');
+};
+
+// 文档上传与检索分析
+let _analysisQuery='';
+function renderAnalysis(hits, filtered, total, query){
+  _analysisQuery=query||'';
+  if(!hits || !hits.length){
+    $('#analysisResult').innerHTML='<div class="empty">无命中（可见切片 '+filtered+'/'+total+'）</div>'; return;
+  }
+  const list=hits.map(h=>'<div class="hit hit-click" data-doc="'+h.doc_id+'">'+
+    '<div class="ht"><b>'+h.title+'</b><span class="chip c-'+h.scene+'">'+h.scene_name+'</span><span class="score">score='+h.score+'</span></div>'+
+    '<p>'+h.highlighted+'</p><div class="doc-preview"></div></div>').join('');
+  $('#analysisResult').innerHTML=list;
+  $('#analysisResult').querySelectorAll('.hit-click .ht').forEach(ht=>{
+    ht.onclick=()=>toggleDocPreview(ht.parentElement);
+  });
+}
+async function toggleDocPreview(el){
+  const pv=el.querySelector('.doc-preview');
+  if(pv.dataset.open==='1'){ pv.dataset.open=''; pv.innerHTML=''; el.classList.remove('expanded'); return; }
+  $('#analysisResult').querySelectorAll('.doc-preview').forEach(p=>{p.dataset.open='';p.innerHTML='';});
+  $('#analysisResult').querySelectorAll('.hit-click').forEach(x=>{if(x!==el)x.classList.remove('expanded');});
+  pv.dataset.open='1'; el.classList.add('expanded');
+  pv.innerHTML='<div class="empty">加载关键位置…</div>';
+  const d=await post('/api/rag/document',{doc_id:el.getAttribute('data-doc'),query:_analysisQuery});
+  if(!d.ok){ pv.innerHTML='<div class="empty">'+(d.error||'加载失败')+'</div>'; return; }
+  const rel=d.positions.filter(p=>p.relevant);
+  const rows=rel.map(p=>'<div class="pv-row"><span class="score">#切片'+(p.chunk_id+1)+(p.score?' · '+p.score:'')+'</span><p>'+p.highlighted+'</p></div>').join('');
+  pv.innerHTML='<div class="pv-head">📄 关键位置 · '+d.total_chunks+' 切片中命中 <b>'+rel.length+'</b> 处（相关度排序）</div>'+
+    (rows||'<div class="empty">该文档无相关切片</div>');
+}
+async function runAnalysis(){
+  const query=$('#analysisQuery').value.trim();
+  if(!query){ $('#analysisResult').innerHTML='<div class="empty">请输入查询关键词</div>'; return; }
+  $('#analysisRun').disabled=true;
+  const d=await post('/api/rag/search',{query,scene:$('#analysisScene').value,mode:'hybrid',top_k:5});
+  $('#analysisRun').disabled=false;
+  if(!d.ok){ $('#analysisResult').innerHTML='<div class="empty">'+d.error+'</div>'; return; }
+  renderAnalysis(d.hits, d.filtered_chunks, d.total_corpus_chunks, d.query);
+}
+$('#analysisRun').onclick=runAnalysis;
+
+$('#uploadRun').onclick=async()=>{
+  const f=$('#uploadFile').files[0];
+  if(!f){ $('#uploadStatus').textContent='请先选择文件'; return; }
+  $('#uploadStatus').textContent='解析中...';
+  const b64=await new Promise(res=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.readAsDataURL(f);});
+  const d=await post('/api/rag/upload',{filename:f.name,data_base64:b64,scene:$('#uploadScene').value});
+  $('#uploadStatus').textContent='';
+  if(d.ok){
+    const kws=(d.keywords||[]).map(k=>'<span class="kw">'+k+'</span>').join('');
+    $('#uploadResult').innerHTML='<div class="hit"><div class="ht"><b>✓ '+d.filename+'</b>'+
+      '<span class="chip c-'+d.scene+'">'+d.scene+'</span><span class="score">'+d.chunks_added+' 切片</span></div>'+
+      '<p>'+d.format+' · '+d.note+'</p>'+
+      (kws?'<div class="kw-row">'+kws+'</div>':'')+
+      (d.highlighted_preview?'<div class="preview-box" style="margin-top:8px">'+d.highlighted_preview+'</div>':'')+
+      '</div>';
+    // 自动用提取的关键词做一次检索分析
+    $('#analysisQuery').value=(d.keywords&&d.keywords.length)?d.keywords.slice(0,3).join(' '):'';
+    $('#analysisScene').value=d.scene;
+    runAnalysis();
+  } else $('#uploadResult').innerHTML='<div class="empty">'+(d.error||'上传失败')+'</div>';
+};
+
+// Agent
+let ecReqId='req-0001';
+$('#ecAmount').oninput=()=>$('#ecAmtVal').textContent='¥'+$('#ecAmount').value;
+async function runEc(repeat){
+  const amount=parseInt($('#ecAmount').value);
+  if(repeat){/* 相同 request_id */}
+  const d=await post('/api/agent/run',{scenario:'ecommerce',params:{order_id:$('#ecOrder').value,amount,request_id:ecReqId}});
+  renderLogs($('#ecLogs'),d.logs);
+  renderResult($('#ecResult'),d.result,!d.ok);
+}
+$('#ecRun').onclick=()=>runEc(false);
+$('#ecRepeat').onclick=()=>runEc(true);
+
+$('#fnRun').onclick=async()=>{
+  const d=await post('/api/agent/run',{scenario:'finance',params:{query:$('#fnQuery').value}});
+  renderLogs($('#fnLogs'),d.logs);
+  renderBreaker($('#fnLamp'),$('#fnBstate'),$('#fnBinfo'),d.breaker);
+  renderResult($('#fnResult'),d.result,!d.ok);
+};
+$('#fnBurst').onclick=async()=>{
+  $('#fnLogs').innerHTML='';
+  for(let i=0;i<4;i++){
+    const d=await post('/api/agent/run',{scenario:'finance',params:{query:$('#fnQuery').value}});
+    renderLogs($('#fnLogs'),d.logs);
+    renderBreaker($('#fnLamp'),$('#fnBstate'),$('#fnBinfo'),d.breaker);
+    if(i===3){renderResult($('#fnResult'),d.result,!d.ok);}
+    await new Promise(r=>setTimeout(r,80));
+  }
+};
+$('#ofRun').onclick=async()=>{
+  const d=await post('/api/agent/run',{scenario:'office',params:{approval_id:$('#ofApproval').value,fail_notice:$('#ofFail').checked}});
+  renderLogs($('#ofLogs'),d.logs);
+  renderResult($('#ofResult'),d.result,!d.ok);
+};
+
+// 工具 schema
+$('#toolsRun').onclick=async()=>{
+  const d=await get('/api/agent/tools');
+  const table=d.table.map(r=>'<tr><td><b>'+r['工具']+'</b></td><td><span class="chip '+(r['副作用']==='READ'?'c-cyan':'c-orange')+'">'+r['副作用']+'</span></td><td>'+r['幂等']+'</td><td>'+r['描述']+'</td></tr>').join('');
+  const schemas=d.tools.map(t=>'<details><summary>'+t.function.name+' — '+t.function.description+'</summary><pre class="schema">'+JSON.stringify(t.function.parameters,null,2)+'</pre></details>').join('');
+  $('#toolsTable').innerHTML='<table><tr><th>工具</th><th>副作用</th><th>幂等</th><th>描述</th></tr>'+table+'</table><div style="margin-top:16px">'+schemas+'</div>';
+};
+
+// 审计
+$('#auditRefresh').onclick=async()=>{
+  const d=await get('/api/audit');
+  const list=d.audit.map(a=>'<div class="audit-line"><span class="at">'+a.ts+'</span><span class="aa">['+a.action+']</span><span class="ad">'+a.detail+'</span><span class="ar '+(a.result==='ok'?'ok':'err')+'">'+a.result+'</span></div>').join('');
+  $('#auditList').innerHTML=list||'<div class="empty">暂无审计记录</div>';
+};
+
+// ===== 模型工程 =====
+// 三场景模型方案卡片
+function renderMlScenes(){
+  $('#mlSceneCards').innerHTML=[
+    ['🛒','电商导购','导购准确率 78%（3 轮调优）','准确率-延迟平衡：分级路由 + 缓存 + 流式'],
+    ['📊','金融投研','引用合规率 ≥95%','6 条合规红线双重校验 + 防幻觉引用'],
+    ['🏢','企业办公','任务完成率 P2≥95%','P0/P1/P2 多意图路由 + Saga 保障'],
+  ].map(([e,t,v,d])=>'<div class="scene-card"><div class="se">'+e+'</div><h3>'+t+'</h3><p style="color:var(--cyan);font-weight:600">'+v+'</p><p>'+d+'</p></div>').join('');
+}
+renderMlScenes();
+
+// 6 条合规红线定义（加载一次）
+async function loadRedLines(){
+  const m=await get('/api/ml/meta');
+  $('#mlRedLines').innerHTML='<table><tr><th>#</th><th>红线</th><th>判定</th></tr>'+
+    m.red_lines.map(r=>'<tr><td>'+r.id+'</td><td><b>'+r.name+'</b></td><td style="color:var(--muted)">'+(r.keywords&&r.keywords.length?r.keywords.join('、'):(r.desc||'引用真实性校验'))+'</td></tr>').join('')+'</table>';
+}
+loadRedLines();
+
+// 准确率-延迟平衡曲线
+function drawTuningCurve(curve){
+  const W=560,H=200,padL=46,padR=24,padT=24,padB=34;
+  const maxLat=2200,accMin=0.3,accMax=0.85;
+  const pts=curve.map(c=>({x:padL+(1-c.avg_ms/maxLat)*(W-padL-padR),y:padT+(1-(c.accuracy-accMin)/(accMax-accMin))*(H-padT-padB),c:c}));
+  let s='';
+  for(let a=0.4;a<=0.8;a+=0.2){
+    const y=padT+(1-(a-accMin)/(accMax-accMin))*(H-padT-padB);
+    s+='<text x="6" y="'+(y+4)+'" fill="#8b949e" font-size="10">'+(a*100).toFixed(0)+'%</text>';
+    s+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="#21262d"/>';
+  }
+  for(let l=0;l<=2000;l+=500){
+    const x=padL+(1-l/maxLat)*(W-padL-padR);
+    s+='<text x="'+x+'" y="'+(H-10)+'" fill="#8b949e" font-size="10" text-anchor="middle">'+(l/1000).toFixed(1)+'s</text>';
+  }
+  s+='<polyline points="'+pts.map(p=>p.x+','+p.y).join(' ')+'" fill="none" stroke="#39c5cf" stroke-width="2" stroke-dasharray="4,3"/>';
+  pts.forEach(p=>{
+    const col=p.c.round===3?'#3fb950':'#58a6ff';
+    s+='<circle cx="'+p.x+'" cy="'+p.y+'" r="6" fill="'+col+'"/>';
+    s+='<text x="'+p.x+'" y="'+(p.y-10)+'" fill="'+col+'" font-size="11" text-anchor="middle">R'+p.c.round+' '+(p.c.accuracy*100).toFixed(0)+'%</text>';
+  });
+  s+='<text x="'+(padL+(W-padL-padR)/2)+'" y="'+(H-1)+'" fill="#8b949e" font-size="10" text-anchor="middle">平均延迟（越低越好 ←）</text>';
+  s+='<text x="14" y="14" fill="#8b949e" font-size="10">准确率 ↑</text>';
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:620px;background:#0a0e14;border:1px solid #21262d;border-radius:10px">'+s+'</svg>';
+}
+
+// 电商 3 轮调优
+$('#mlTuningRun').onclick=async()=>{
+  $('#mlTuningRun').disabled=true;
+  const d=await post('/api/ml/tuning',{});
+  $('#mlTuningRun').disabled=false;
+  const rows=d.rounds.map(r=>'<tr><td><span class="chip c-purple">R'+r.round+'</span></td><td><b>'+r.name+'</b><div style="font-size:11px;color:var(--muted)">'+r.changes.join(' · ')+'</div></td>'+
+    '<td class="num" style="color:var(--green)">'+(r.accuracy*100).toFixed(0)+'%</td><td class="num">'+r.avg_ms+'ms</td><td class="num">'+r.p95_ms+'ms</td><td class="num">¥'+r.cost_per_1k.toFixed(2)+'</td><td class="num">'+(r.hallucination*100).toFixed(0)+'%</td></tr>').join('');
+  const gate=d.gate;
+  const gateChip=gate.pass?'<span class="chip c-green">'+gate.verdict+'</span>':'<span class="chip c-red">'+gate.verdict+'</span>';
+  const levers=d.levers.map(l=>'<div class="hit"><div class="ht"><b>'+l.lever+'</b><span class="chip c-cyan">'+l.gain+'</span></div><p>'+l.desc+'</p></div>').join('');
+  const latStrat=d.latency_strategies.map(s=>'<tr><td><b>'+s.strategy+'</b></td><td style="color:var(--muted)">'+s.effect+'</td></tr>').join('');
+  $('#mlTuning').innerHTML='<div style="margin-bottom:12px">回归门禁（准确率 ≥75%）：'+gateChip+'</div>'+
+    '<table><tr><th>轮次</th><th>方案</th><th>准确率</th><th>平均延迟</th><th>P95</th><th>成本/千token</th><th>幻觉率</th></tr>'+rows+'</table>'+
+    '<div style="margin-top:16px;margin-bottom:8px"><b style="font-size:12.5px;color:var(--muted)">准确率-延迟平衡曲线</b></div>'+drawTuningCurve(d.curve)+
+    '<div style="margin-top:16px" class="qa-grid"><div><b style="font-size:12.5px;color:var(--muted)">准确率提升杠杆</b>'+levers+'</div>'+
+    '<div><b style="font-size:12.5px;color:var(--muted)">延迟平衡策略（大促 QPS 2000）</b><table><tr><th>手段</th><th>效果</th></tr>'+latStrat+'</table></div></div>';
+};
+
+// 金融合规扫描
+function bindMlCompPreset(){
+  document.querySelectorAll('#mlCompPreset button').forEach(b=>b.onclick=()=>{$('#mlCompAnswer').value=b.textContent;});
+}
+bindMlCompPreset();
+$('#mlCompRun').onclick=async()=>{
+  const answer=$('#mlCompAnswer').value.trim();if(!answer)return;
+  const cite=$('#mlCompCite').value;let citations=[];
+  if(cite==='real')citations=[{marker:1,doc_id:'星辰科技-2025年报',page:'P12',cell:'营收表'},{marker:2,doc_id:'行业研报-光伏2026',page:'P5',cell:'渗透率'}];
+  if(cite==='fake')citations=[{marker:1,doc_id:'不存在的研报-X',page:'P99',cell:'虚构表'},{marker:2,doc_id:'星辰科技-2025年报',page:'P12',cell:'营收表'}];
+  const d=await post('/api/ml/compliance',{answer,citations});
+  const red=d.red_line_hits.map(h=>'<span class="chip c-red" style="margin:2px">'+h.name+'</span>').join('')||'<span class="chip c-green">未命中红线</span>';
+  let citeHtml='';
+  if(d.citation){citeHtml='<div class="ritem" style="margin-top:8px"><b>引用合规率</b>'+(d.citation.citation_rate*100).toFixed(0)+'%（'+d.citation.compliant.length+'/'+d.citation.total+' 真实）'+
+    (d.citation.hallucinated.length?'<span class="chip c-red" style="margin-left:8px">幻觉引用 '+d.citation.hallucinated.length+' 条</span>':'<span class="chip c-green" style="margin-left:8px">引用全部真实</span>')+'</div>';}
+  const vc=d.passed?'<span class="chip c-green">'+d.verdict+'</span>':'<span class="chip c-red">'+d.verdict+'</span>';
+  $('#mlCompResult').innerHTML='<div style="padding:12px;border:1px solid '+(d.passed?'rgba(63,185,80,.4)':'rgba(248,81,73,.5)')+';border-radius:8px;background:var(--bg2)">'+vc+
+    '<div class="ritem" style="margin-top:8px"><b>命中红线</b>'+red+'</div>'+citeHtml+'</div>';
+};
+
+// 办公 P0/P1/P2 路由
+function bindMlRoutePreset(){
+  document.querySelectorAll('#mlRoutePreset button').forEach(b=>b.onclick=()=>{$('#mlRouteReq').value=b.textContent;});
+}
+bindMlRoutePreset();
+$('#mlRouteRun').onclick=async()=>{
+  const req=$('#mlRouteReq').value.trim();if(!req)return;
+  const d=await post('/api/ml/routing',{request:req});
+  const r=d.route;
+  const lvChip={'P0':'c-red','P1':'c-orange','P2':'c-green'}[r.level];
+  const compRows=Object.entries(d.completion).map(([lv,c])=>'<tr><td><span class="chip '+(lv==='P0'?'c-red':lv==='P1'?'c-orange':'c-green')+'">'+lv+'</span></td>'+
+    '<td class="num">'+c.completion_rate+'</td><td class="num">'+(c.target||'—')+'</td><td style="color:var(--muted)">'+c.note+'</td></tr>').join('');
+  $('#mlRouteResult').innerHTML='<div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2)">'+
+    '<div class="ritem"><b>分级</b><span class="chip '+lvChip+'">'+r.level+'</span> <span style="color:var(--muted)">'+r.name+'</span></div>'+
+    '<div class="ritem"><b>执行策略</b>'+r.strategy+'</div>'+
+    '<div class="ritem"><b>人工介入</b>'+(r.need_human?'<span class="chip c-red">需要（双因子）</span>':'<span class="chip c-green">不需要</span>')+'　<b>二次确认</b>'+(r.need_confirm?'<span class="chip c-orange">需要</span>':'<span class="chip c-green">不需要</span>')+'</div>'+
+    '</div>'+
+    '<div style="margin-top:14px"><b style="font-size:12.5px;color:var(--muted)">任务完成率（模拟 200 任务/级）</b><table><tr><th>级别</th><th>完成率</th><th>目标</th><th>说明</th></tr>'+compRows+'</table></div>';
+};
+
+// 离线评测
+$('#mlEvalRun').onclick=async()=>{
+  $('#mlEvalRun').disabled=true;
+  const d=await post('/api/ml/offline_eval',{});
+  $('#mlEvalRun').disabled=false;
+  const rows=d.scenarios.map(s=>'<tr><td>'+s.name+'</td><td>'+s.metric+'</td><td class="num" style="color:var(--cyan)">'+s.value+'</td>'+
+    '<td>'+s.target+'</td><td class="num">'+s.eval_size+'</td><td>'+s.rounds+'</td><td>'+(s.gate_pass?'<span class="chip c-green">通过</span>':'<span class="chip c-red">阻断</span>')+'</td></tr>').join('');
+  const pipe=d.pipeline.map(p=>'<div class="hit"><div class="ht"><b>'+p.step+'. '+p.name+'</b></div><p>'+p.desc+'</p></div>').join('');
+  $('#mlEval').innerHTML='<table><tr><th>场景</th><th>指标</th><th>值</th><th>门禁目标</th><th>评测集</th><th>方案</th><th>门禁</th></tr>'+rows+'</table>'+
+    '<div style="margin-top:14px"><b style="font-size:12.5px;color:var(--muted)">离线评测流水线</b>'+pipe+'</div>';
+};
+
+// A/B 测试
+$('#mlAbRun').onclick=async()=>{
+  $('#mlAbRun').disabled=true;
+  const d=await post('/api/ml/abtest',{});
+  $('#mlAbRun').disabled=false;
+  const sig=d.significant?'<span class="chip c-green">显著（p<0.05）</span>':'<span class="chip c-orange">未显著</span>';
+  const rollout=d.rollout.map(s=>'<div class="hit"><div class="ht"><b>'+s.stage+'</b><span class="chip c-purple">'+s.pct+'%</span></div><p>'+s.action+'</p></div>').join('');
+  $('#mlAb').innerHTML='<div class="qa-grid"><div style="padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2)"><div style="font-size:12px;color:var(--muted)">对照组 A（当前 v3）</div><div style="font-size:24px;font-weight:800;font-family:var(--mono);margin:4px 0">'+(d.control.accuracy*100).toFixed(2)+'%</div><div style="font-size:11px;color:var(--muted)">n='+d.control.n+'</div></div>'+
+    '<div style="padding:12px;border:1px solid var(--blue);border-radius:8px;background:var(--bg2)"><div style="font-size:12px;color:var(--muted)">实验组 B（候选 v4）</div><div style="font-size:24px;font-weight:800;font-family:var(--mono);margin:4px 0;color:var(--blue)">'+(d.treatment.accuracy*100).toFixed(2)+'%</div><div style="font-size:11px;color:var(--muted)">n='+d.treatment.n+' · 流量 '+d.traffic_pct+'%</div></div></div>'+
+    '<div style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2)"><b>提升幅度</b> '+d.lift+'%　<b style="margin-left:12px">z 值</b> '+d.z_score+'　<b style="margin-left:12px">p 值</b> '+d.p_value+'　'+sig+'<div style="margin-top:6px;color:var(--muted)">'+d.verdict+'</div></div>'+
+    '<div style="margin-top:14px"><b style="font-size:12.5px;color:var(--muted)">灰度放量计划</b>'+rollout+'<div class="hit"><div class="ht"><b>回滚</b></div><p>'+d.rollback+'</p></div></div>';
+};
+
+// 幻觉防御
+$('#mlHallRun').onclick=async()=>{
+  const query=$('#mlHallQuery').value.trim();if(!query)return;
+  const mode=$('#mlHallMode').value;
+  const d=await post('/api/ml/hallucination',{query,scene:'finance',mode});
+  const icon={pass:'✅',block:'⛔',skip:'➖',fallback:'⚠️'};
+  const cls={pass:'c-green',block:'c-red',skip:'c-orange',fallback:'c-orange'};
+  const layers=d.layers.map(l=>'<tr><td class="num">'+l.layer+'</td><td><b>'+l.name+'</b></td><td><span class="chip '+cls[l.status]+'">'+icon[l.status]+' '+l.result+'</span></td><td style="color:var(--muted)">'+l.detail+'</td></tr>').join('');
+  const verdict=d.passed?'<span class="chip c-green">放行输出</span>':'<span class="chip c-red">拦截 / 兜底拒绝</span>';
+  $('#mlHall').innerHTML='<div style="margin-bottom:10px">'+verdict+'<span style="color:var(--muted);margin-left:10px;font-size:13px">'+d.answer+'</span></div>'+
+    '<table><tr><th>层</th><th>防御手段</th><th>结果</th><th>说明</th></tr>'+layers+'</table>';
+};
+
+// 可观测性
+$('#mlObsRun').onclick=async()=>{
+  $('#mlObsRun').disabled=true;
+  const d=await get('/api/ml/observability');
+  $('#mlObsRun').disabled=false;
+  const metrics=d.metrics.map(m=>'<div class="stat"><div class="sv" style="font-size:20px">'+m.value+'</div><div class="sl">'+m.name+'</div></div>').join('');
+  const traces=d.traces.slice(0,8).map(t=>'<div class="audit-line"><span class="at">'+t.trace_id+'</span><span class="aa">['+t.scenario+']</span><span class="ad">'+t.query+' · spans:'+t.spans.length+'</span><span class="ar '+(t.status==='ok'?'ok':'err')+'">'+t.latency_ms+'ms</span></div>').join('');
+  const alerts=d.alerts.length?d.alerts.map(a=>'<div class="hit"><div class="ht"><b style="color:var(--red)">🚨 '+a.level+'</b><span class="chip c-red">'+a.rule+'</span></div><p>'+a.detail+'</p></div>').join(''):'<div class="empty">当前无告警</div>';
+  $('#mlObs').innerHTML='<div class="stat-grid" style="grid-template-columns:repeat(3,1fr)">'+metrics+'</div>'+
+    '<div style="margin-top:12px"><b style="font-size:12.5px;color:var(--muted)">最近链路 trace（trace_id 贯穿全链路）</b>'+traces+'</div>'+
+    '<div style="margin-top:14px"><b style="font-size:12.5px;color:var(--muted)">告警</b>'+alerts+'</div>'+
+    '<div style="margin-top:12px;font-size:11.5px;color:var(--muted)">生产版技术栈：'+d.stack+'</div>';
+};
+</script>
+</body>
+</html>
