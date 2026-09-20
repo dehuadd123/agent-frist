@@ -2,7 +2,9 @@
 
 > **AI 直连检索** × RAG 知识底座 × Agent 决策引擎 × 模型工程 × **业务功能**，五核闭环的**零依赖**企业级实操平台。
 > 纯 Python 标准库实现，`python server.py` 一行启动，不装任何包、不下载模型。
-> 本版在完整保留三核的基础上，检索能力改为**直连 DeepSeek 等主流大模型 API**，并新增三场景**业务功能**（电商导购 / 金融投研 / 企业办公）的具体实现——本地向量库检索打底 + 可选 LLM 增强的混合模式。
+> 本版在完整保留三核的基础上，检索能力改为**直连 DeepSeek 等主流大模型 API**，并落地三场景的**具体实现**：
+> - **业务功能**（电商导购 / 金融投研 / 企业办公）——本地向量库检索打底 + 可选 LLM 增强的混合模式；
+> - **决策引擎**（电商客服退款 / 金融投研合规 / 企业办公审批）——真实订单库 + 退款规则引擎、财报指标 + 6 条合规红线 + 熔断、分级审批链 + Saga 补偿。
 
 ---
 
@@ -23,11 +25,11 @@
 
 **核心区别**：本版新增「AI 智能检索」——提问/本地文件检索不经过本地 BM25/向量索引，而是把内容直接交给 DeepSeek 等 OpenAI 兼容大模型作答。API Key 由用户在浏览器前端填写，仅存 `localStorage`，不落服务器。
 
-| 场景 | RAG 特征 | Agent 流程 | 模型工程 |
+| 场景 | RAG 特征 | Agent 决策引擎（具体实现） | 模型工程 |
 |------|---------|-----------|---------|
-| **电商导购** | 图文混排 + 多模态检索 | 退款审批（条件分支 + 幂等） | 准确率 40%→78% 调优 |
-| **金融投研** | PDF 表格 + 合规溯源 | 合规熔断（红线闸门） | 6 条红线 + 引用合规率 |
-| **企业办公** | 多格式 + 权限隔离 | 跨系统 Saga（并行 + 补偿） | P0/P1/P2 路由 + 完成率 |
+| **电商客服** | 图文混排 + 多模态检索 | 真实订单库 + 退款规则引擎（状态×金额×原因三分支 + 幂等防重） | 准确率 40%→78% 调优 |
+| **金融投研** | PDF 表格 + 合规溯源 | 财报指标计算 → 客观陈述 → 6 条红线闸门 → 熔断兜底 | 6 条红线 + 引用合规率 |
+| **企业办公** | 多格式 + 权限隔离 | 审批类型识别 + 分级审批链（P1/P2/P3）+ Saga 逆序补偿 | P0/P1/P2 路由 + 完成率 |
 
 ---
 
@@ -37,7 +39,7 @@
 enterprise-platform-api/
 ├── server.py                 # 统一 HTTP 服务（入口 + RAG/Agent/ML + LLM 直连接口）
 ├── multiparse.py             # 多格式文档解析（docx/xlsx/pptx/pdf/csv/json/html/图片）
-├── tools.py                  # 工具注册表（12 工具 Function Calling 声明）
+├── tools.py                  # 工具注册表（15 工具 Function Calling 声明）
 ├── agents.py                 # 三个业务 Agent（DAG 工作流定义）
 ├── orchestrator.py           # DAG 工作流编排器（拓扑排序/重试/熔断/Saga/幂等）
 ├── model_eng.py              # 模型工程全链路（调优/合规/路由/评测/A-B/幻觉/可观测）
@@ -154,21 +156,28 @@ def tool_search_reports(query, scene="finance"):
 
 **作用**：把 `tools.py` 的工具组合成确定性 DAG 工作流，定义三大场景的业务逻辑，并暴露核心的**检索增强问答 Agent**（RAG+Agent 闭环主线）。
 
-**关键运行代码**（电商条件分支 + 金融合规熔断）：
+**关键运行代码**（电商退款规则引擎三分支 + 金融合规熔断）：
 
 ```python
 def build_ecommerce_agent():
     def node_check_policy(ctx):
-        return "auto" if ctx["order"]["amount"] < 500 else "manual"   # 金额分支
+        # 退款规则引擎：按订单状态 × 金额 × 原因三分支
+        return tools.tool_check_refund_policy(ctx["order"],
+                                              ctx.get("reason", "no_reason"))["decision"]
     return (Workflow("电商客服Agent", start="query_order")
             .add_node("query_order", node_query_order, next="check_policy")
-            .add_node("check_policy", node_check_policy)
-            .branch("check_policy", {"auto": "auto_refund", "manual": "manual_approve"}))
+            .add_node("check_policy", node_check_policy)          # auto / manual / reject
+            .add_node("auto_refund", node_auto_refund, next="notify")
+            .add_node("manual_approve", node_manual_approve, next="notify")
+            .add_node("reject_refund", node_reject_refund, next="notify")
+            .add_node("notify", node_notify)
+            .branch("check_policy", {"auto": "auto_refund", "manual": "manual_approve",
+                                     "reject": "reject_refund"}))
 
-def build_qa_agent():                # 意图识别 → RAG 检索 → 生成 → 合规闸门 → 交付
+def build_finance_agent():   # RAG 检索 → 财报指标计算 → 客观陈述 → 合规闸门 → 交付
     ...
-    .add_node("retrieve", node_retrieve, next="generate")
-    .add_node("check", guarded_check, fallback=node_reject)   # 熔断 + 兜底
+    .add_node("analyze", node_analyze, next="generate")       # 财报指标计算
+    .add_node("check", guarded_check, fallback=node_reject)   # 6 条红线 + 熔断 + 免责兜底
 ```
 
 ---
@@ -427,12 +436,18 @@ def _run_search(query, scene, mode, top_k):
 
 ---
 
-### 功能 4：Agent 工具调用 + DAG 编排
+### 功能 4：Agent 工具调用 + DAG 编排（三场景具体实现）
 
-**作用**：三场景 Agent 工作流，含条件分支、合规熔断、Saga 补偿、幂等保障。
+**作用**：三个业务 Agent 工作流，含真实订单库退款规则引擎、财报指标 + 合规熔断、分级审批链 + Saga 补偿、幂等保障。15 个工具（Function Calling 契约）。
 
 ```python
-def build_office_agent():
+def build_office_agent():          # 企业办公：审批类型识别 + 分级审批链 + Saga
+    def node_create(ctx):          # 请假/报销/出差 → 分级审批链（P1/P2/P3）
+        chain = tools.tool_create_approval(
+            ctx["approval_id"], ctx["applicant"],
+            approval_type=ctx.get("approval_type", "leave"),
+            params=ctx.get("params", {}))
+        ctx["chain"] = chain["chain"]
     return (Workflow("企业办公Agent", start="create_approval")
             .add_node("create_approval", node_create, compensate=node_undo_create)
             .add_node("prepare_attachment", node_prepare)            # 无依赖并行
