@@ -400,16 +400,30 @@ details[open] summary{border-bottom:1px solid var(--border2)}
 
   <div class="card"><h3>工具注册表（Function Calling）</h3>
     <div class="btn-row"><button class="btn sec" id="toolsRun">加载工具 Schema</button></div>
-    <div id="toolsTable" style="margin-top:14px"><div class="empty">点击加载 12 个工具的 Function Calling 声明与副作用分级</div></div>
+    <div id="toolsTable" style="margin-top:14px"><div class="empty">点击加载 15 个工具的 Function Calling 声明与副作用分级</div></div>
   </div>
 
   <div class="main-grid">
     <div class="card">
       <h3>🛒 电商客服 Agent</h3>
-      <div class="field"><label>订单号</label><input id="ecOrder" value="O1001"></div>
-      <div class="field"><label>退款金额：<span class="range-val" id="ecAmtVal">¥300</span></label>
-        <input type="range" id="ecAmount" min="100" max="1000" step="50" value="300"></div>
-      <div class="hint" style="color:var(--muted);font-size:11.5px;margin-bottom:10px">&lt;¥500 自动退款 · ≥¥500 转人工审批</div>
+      <div class="field"><label>订单号</label>
+        <select id="ecOrder">
+          <option value="O1001">O1001 · 声浪TWS ¥299（未发货）</option>
+          <option value="O1003">O1003 · 雷蛇耳机 ¥899（已发货）</option>
+          <option value="O1004">O1004 · 星悦AirBuds ¥1299（签收6天）</option>
+          <option value="O1005">O1005 · 冰晶冰箱 ¥3999（签收17天）</option>
+          <option value="O1006">O1006 · 星辰X100Pro ¥6999（超阈值）</option>
+          <option value="O1007">O1007 · 手环 ¥299（已退款）</option>
+        </select>
+      </div>
+      <div class="field"><label>退款原因</label>
+        <select id="ecReason">
+          <option value="no_reason">无理由退货</option>
+          <option value="quality">质量问题</option>
+          <option value="logistics">物流问题</option>
+        </select>
+      </div>
+      <div class="hint" style="color:var(--muted);font-size:11.5px;margin-bottom:10px">规则：未发货自动退 · 已发货无理由转人工 · 签收超7天拒绝 · &gt;¥5000 转风控 · 已退款拒绝</div>
       <div class="btn-row"><button class="btn" id="ecRun">运行退款</button><button class="btn sec" id="ecRepeat">🔁 重复提交（幂等）</button></div>
     </div>
     <div>
@@ -423,8 +437,13 @@ details[open] summary{border-bottom:1px solid var(--border2)}
   <div class="main-grid">
     <div class="card">
       <h3>📊 金融投研 Agent</h3>
-      <div class="field"><label>投研问题</label><input id="fnQuery" value="建议买入某标的"></div>
-      <div class="btn-row"><button class="btn" id="fnRun">运行投研</button><button class="btn sec" id="fnBurst">连续运行 ×4（触发熔断）</button></div>
+      <div class="field"><label>投研问题</label><input id="fnQuery" value="星辰科技 2025年营收分析"></div>
+      <div class="hint" style="color:var(--muted);font-size:11.5px;margin-bottom:10px">客观财报查询通过合规闸门；输入「建议买入 / 保证收益」触发红线拦截 + 熔断</div>
+      <div class="btn-row">
+        <button class="btn" id="fnRun">运行投研</button>
+        <button class="btn sec" id="fnViolate">⚠️ 违规拦截演示</button>
+        <button class="btn sec" id="fnBurst">连续 ×4（触发熔断）</button>
+      </div>
     </div>
     <div>
       <div class="breaker"><div class="lamp" id="fnLamp"></div><div class="binfo"><div class="bstate" id="fnBstate">CLOSED</div><div id="fnBinfo"></div></div></div>
@@ -437,7 +456,16 @@ details[open] summary{border-bottom:1px solid var(--border2)}
   <div class="main-grid">
     <div class="card">
       <h3>🏢 企业办公 Agent</h3>
+      <div class="field"><label>审批类型</label>
+        <select id="ofType">
+          <option value="leave">请假（按天数分级）</option>
+          <option value="expense">报销（按金额分级）</option>
+          <option value="trip">出差（按天数分级）</option>
+        </select>
+      </div>
+      <div class="field"><label>天数 / 金额</label><input id="ofParam" type="number" value="5"></div>
       <div class="field"><label>审批单号</label><input id="ofApproval" value="AP-001"></div>
+      <div class="hint" style="color:var(--muted);font-size:11.5px;margin-bottom:10px">请假 ≤3天P1 · 3-10天P2 · &gt;10天P3；报销 ≤1000P1 · 1000-5000P2 · &gt;5000P3</div>
       <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ofFail" style="width:auto"> 注入「通知服务故障」触发 Saga 补偿</label></div>
       <div class="btn-row"><button class="btn" id="ofRun">运行审批流</button></div>
     </div>
@@ -567,10 +595,28 @@ function renderResult(el,obj,isErr){
   el.classList.add('show');el.classList.toggle('err',!!isErr);
   let html='';
   if(isErr){html='<div class="ritem" style="color:var(--red)">错误：'+obj.error+'</div>';}
-  else if(obj){html=Object.entries(obj).filter(([k])=>!['evidence','sources'].includes(k)).map(([k,v])=>{
-    if(v&&typeof v==='object')v=JSON.stringify(v);
-    return '<div class="ritem"><b>'+k+'</b>'+String(v)+'</div>';
-  }).join('');
+  else if(obj){
+    const special=['evidence','sources','answer','metrics','trend','approvers','violations','order','result'];
+    html=Object.entries(obj).filter(([k])=>!special.includes(k)).map(([k,v])=>{
+      if(k==='decision'){
+        const m={auto:['✅ 自动退款','c-green'],manual:['👤 转人工审批','c-orange'],reject:['⛔ 拒绝退款','c-red']};
+        const t=m[v]||[v,'c-purple'];
+        return '<div class="ritem"><b>决策</b><span class="chip '+t[1]+'">'+t[0]+'</span></div>';
+      }
+      if(v&&typeof v==='object')v=JSON.stringify(v);
+      return '<div class="ritem"><b>'+k+'</b>'+String(v)+'</div>';
+    }).join('');
+    if(obj.order&&typeof obj.order==='object')html+='<div class="ritem"><b>订单</b>'+obj.order.product+' · ¥'+obj.order.amount+' · ['+obj.order.status+']</div>';
+    if(obj.result&&typeof obj.result==='object'){
+      const r=obj.result;
+      if(r.refund_id)html+='<div class="ritem"><b>退款单</b>'+r.refund_id+'（'+r.status+'）</div>';
+      else if(r.task_id)html+='<div class="ritem"><b>人工任务</b>'+r.task_id+'（'+r.status+'）</div>';
+      else if(r.status==='rejected')html+='<div class="ritem"><b>状态</b>已拒绝退款</div>';
+    }
+    if(obj.metrics&&obj.metrics.length)html+='<div class="ritem"><b>财务指标</b><table><tbody>'+obj.metrics.map(m=>'<tr><td>'+m['指标']+'</td><td class="num" style="color:var(--cyan)">'+m['值']+'</td><td style="color:var(--muted)">'+m['说明']+'</td></tr>').join('')+'</tbody></table></div>';
+    if(obj.trend&&obj.trend.length)html+='<div class="ritem"><b>趋势研判</b>'+obj.trend.map(t=>'<div>· '+t+'</div>').join('')+'</div>';
+    if(obj.approvers&&obj.approvers.length)html+='<div class="ritem"><b>审批链</b>'+obj.approvers.join(' → ')+'</div>';
+    if(obj.violations&&obj.violations.length)html+='<div class="ritem" style="color:var(--red)"><b>命中红线</b>'+obj.violations.join('、')+'</div>';
     if(obj.answer)html+='<div class="rans">'+obj.answer+'</div>';
     if(obj.sources&&obj.sources.length)html+='<div class="ritem"><b>溯源</b>'+obj.sources.join('、')+'</div>';
     if(obj.evidence)html+='<div class="ritem"><b>证据</b>'+obj.evidence+'</div>';
@@ -817,35 +863,38 @@ $('#uploadRun').onclick=async()=>{
 
 // Agent
 let ecReqId='req-0001';
-$('#ecAmount').oninput=()=>$('#ecAmtVal').textContent='¥'+$('#ecAmount').value;
 async function runEc(repeat){
-  const amount=parseInt($('#ecAmount').value);
-  if(repeat){/* 相同 request_id */}
-  const d=await post('/api/agent/run',{scenario:'ecommerce',params:{order_id:$('#ecOrder').value,amount,request_id:ecReqId}});
+  if(!repeat){ecReqId='req-'+Math.random().toString(36).slice(2,8);}
+  const d=await post('/api/agent/run',{scenario:'ecommerce',params:{order_id:$('#ecOrder').value,reason:$('#ecReason').value,request_id:ecReqId}});
   renderLogs($('#ecLogs'),d.logs);
   renderResult($('#ecResult'),d.result,!d.ok);
 }
 $('#ecRun').onclick=()=>runEc(false);
 $('#ecRepeat').onclick=()=>runEc(true);
 
-$('#fnRun').onclick=async()=>{
-  const d=await post('/api/agent/run',{scenario:'finance',params:{query:$('#fnQuery').value}});
+function renderFinance(d){
   renderLogs($('#fnLogs'),d.logs);
   renderBreaker($('#fnLamp'),$('#fnBstate'),$('#fnBinfo'),d.breaker);
   renderResult($('#fnResult'),d.result,!d.ok);
+}
+$('#fnRun').onclick=async()=>{
+  renderFinance(await post('/api/agent/run',{scenario:'finance',params:{query:$('#fnQuery').value}}));
+};
+$('#fnViolate').onclick=async()=>{
+  renderFinance(await post('/api/agent/run',{scenario:'finance',params:{query:'建议买入星辰科技，保证收益'}}));
 };
 $('#fnBurst').onclick=async()=>{
   $('#fnLogs').innerHTML='';
   for(let i=0;i<4;i++){
-    const d=await post('/api/agent/run',{scenario:'finance',params:{query:$('#fnQuery').value}});
-    renderLogs($('#fnLogs'),d.logs);
-    renderBreaker($('#fnLamp'),$('#fnBstate'),$('#fnBinfo'),d.breaker);
-    if(i===3){renderResult($('#fnResult'),d.result,!d.ok);}
+    renderFinance(await post('/api/agent/run',{scenario:'finance',params:{query:'建议买入星辰科技，保证收益'}}));
     await new Promise(r=>setTimeout(r,80));
   }
 };
 $('#ofRun').onclick=async()=>{
-  const d=await post('/api/agent/run',{scenario:'office',params:{approval_id:$('#ofApproval').value,fail_notice:$('#ofFail').checked}});
+  const t=$('#ofType').value;
+  const v=parseInt($('#ofParam').value)||1;
+  const params=(t==='expense')?{amount:v}:{days:v};
+  const d=await post('/api/agent/run',{scenario:'office',params:{approval_id:$('#ofApproval').value,approval_type:t,params,fail_notice:$('#ofFail').checked}});
   renderLogs($('#ofLogs'),d.logs);
   renderResult($('#ofResult'),d.result,!d.ok);
 };

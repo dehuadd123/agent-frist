@@ -112,5 +112,47 @@
     {"category": "请假", "item": "年假", "standard": "5-15天", "detail": "按工龄 5 至 15 天"},
     {"category": "请假", "item": "病假", "standard": "带薪", "detail": "需提供医院证明"},
     {"category": "考勤", "item": "迟到", "standard": "扣50元/次", "detail": "单次迟到扣除 50 元"}
-  ]
+  ],
+  "orders": [
+    {"order_id": "O1001", "user_id": "U42", "product_id": "P007", "product_name": "声浪 TWS",
+     "amount": 299, "status": "paid",
+     "pay_time": "2026-09-19 09:30", "ship_time": null, "sign_time": null},
+    {"order_id": "O1002", "user_id": "U18", "product_id": "P012", "product_name": "净泉洗衣机 10kg",
+     "amount": 1999, "status": "paid",
+     "pay_time": "2026-09-18 14:20", "ship_time": null, "sign_time": null},
+    {"order_id": "O1003", "user_id": "U77", "product_id": "P009", "product_name": "雷蛇 电竞耳机",
+     "amount": 899, "status": "shipped",
+     "pay_time": "2026-09-15 10:00", "ship_time": "2026-09-16 08:00", "sign_time": null},
+    {"order_id": "O1004", "user_id": "U33", "product_id": "P006", "product_name": "星悦 AirBuds Pro",
+     "amount": 1299, "status": "delivered",
+     "pay_time": "2026-09-12 11:00", "ship_time": "2026-09-12 16:00", "sign_time": "2026-09-14 18:30"},
+    {"order_id": "O1005", "user_id": "U55", "product_id": "P011", "product_name": "冰晶冰箱 460L",
+     "amount": 3999, "status": "delivered",
+     "pay_time": "2026-08-30 09:00", "ship_time": "2026-09-01 10:00", "sign_time": "2026-09-03 15:00"},
+    {"order_id": "O1006", "user_id": "U09", "product_id": "P002", "product_name": "星辰 X100 Pro",
+     "amount": 6999, "status": "delivered",
+     "pay_time": "2026-09-10 20:00", "ship_time": "2026-09-11 09:00", "sign_time": "2026-09-13 12:00"},
+    {"order_id": "O1007", "user_id": "U42", "product_id": "P023", "product_name": "智能手环 7",
+     "amount": 299, "status": "refunded",
+     "pay_time": "2026-09-01 10:00", "ship_time": "2026-09-01 15:00", "sign_time": null},
+    {"order_id": "O1008", "user_id": "U66", "product_id": "P010", "product_name": "清风空调 1.5匹",
+     "amount": 2899, "status": "shipped",
+     "pay_time": "2026-09-14 13:00", "ship_time": "2026-09-15 09:00", "sign_time": null}
+  ],
+  "approval_rules": {
+    "leave": [
+      {"max_days": 3, "level": "P1", "approvers": ["直属主管"]},
+      {"max_days": 10, "level": "P2", "approvers": ["直属主管", "HR"]},
+      {"max_days": 999, "level": "P3", "approvers": ["直属主管", "HR", "VP"]}
+    ],
+    "expense": [
+      {"max_amount": 1000, "level": "P1", "approvers": ["直属主管"]},
+      {"max_amount": 5000, "level": "P2", "approvers": ["财务"]},
+      {"max_amount": 999999, "level": "P3", "approvers": ["财务", "VP"]}
+    ],
+    "trip": [
+      {"max_days": 5, "level": "P1", "approvers": ["直属主管"]},
+      {"max_days": 999, "level": "P2", "approvers": ["直属主管", "部门负责人"]}
+    ]
+  }
 }

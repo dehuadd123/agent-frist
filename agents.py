@@ -1,8 +1,8 @@
-"""三个业务 Agent：把工具（tools.py）组合成确定性 DAG 工作流。
+"""三个业务 Agent：把工具（tools.py）组合成确定性 DAG 工作流（具体实现，非演示）。
 
-- 电商客服 Agent：退款审批（条件分支 + 幂等）
-- 金融投研 Agent：合规熔断（红线闸门 + 兜底免责声明）
-- 企业办公 Agent：跨系统 Saga（并行汇聚 + 逆序补偿）
+- 电商客服 Agent：真实订单库 + 退款规则引擎（状态×金额×原因三分支 auto/manual/reject + 幂等）
+- 金融投研 Agent：RAG 检索 → 财报指标计算 → 客观陈述 → 6 条合规红线闸门 + 熔断兜底
+- 企业办公 Agent：审批类型识别 + 分级审批链（P1/P2/P3）+ 跨系统 Saga（并行汇聚 + 逆序补偿）
 - 通用演示：节点级重试退避 + 超时降级
 """
 import os
@@ -20,19 +20,26 @@ import tools
 # =====================================================================
 def build_ecommerce_agent():
     def node_query_order(ctx):
-        ctx["order"] = tools.tool_query_order(ctx["order_id"], amount=ctx.get("amount", 300))
+        ctx["order"] = tools.tool_query_order(ctx["order_id"])
 
     def node_check_policy(ctx):
-        # 确定性规则（非 LLM）：金额 < 500 自动退款，否则转人工
-        return "auto" if ctx["order"]["amount"] < 500 else "manual"
+        # 退款规则引擎（确定性，非 LLM）：按订单状态 + 金额 + 原因三分支
+        reason = ctx.get("reason", "no_reason")
+        ctx["policy"] = tools.tool_check_refund_policy(ctx["order"], reason)
+        return ctx["policy"]["decision"]  # auto / manual / reject
 
     def node_auto_refund(ctx):
-        ctx["result"] = tools.tool_refund(ctx["order_id"], ctx["request_id"], "用户申请退款")
-        ctx["message"] = "已自动退款到原支付渠道"
+        ctx["result"] = tools.tool_refund(ctx["order_id"], ctx["request_id"],
+                                          ctx.get("reason", "no_reason"))
+        ctx["message"] = ctx["policy"]["message"]
 
     def node_manual_approve(ctx):
-        ctx["result"] = tools.tool_create_manual_task(ctx["order_id"], "金额超阈值")
-        ctx["message"] = "已转人工审批，待风控复核"
+        ctx["result"] = tools.tool_create_manual_task(ctx["order_id"], ctx["policy"]["message"])
+        ctx["message"] = ctx["policy"]["message"]
+
+    def node_reject_refund(ctx):
+        ctx["result"] = {"status": "rejected"}
+        ctx["message"] = ctx["policy"]["message"]
 
     def node_notify(ctx):
         tools.tool_notify_user(ctx["user_id"], ctx["message"])
@@ -40,11 +47,13 @@ def build_ecommerce_agent():
     return (
         Workflow("电商客服Agent", start="query_order")
         .add_node("query_order", node_query_order, next="check_policy")
-        .add_node("check_policy", node_check_policy)  # 条件分支节点
+        .add_node("check_policy", node_check_policy)  # 条件分支节点（三分支）
         .add_node("auto_refund", node_auto_refund, next="notify")
         .add_node("manual_approve", node_manual_approve, next="notify")
+        .add_node("reject_refund", node_reject_refund, next="notify")
         .add_node("notify", node_notify)
-        .branch("check_policy", {"auto": "auto_refund", "manual": "manual_approve"})
+        .branch("check_policy", {"auto": "auto_refund", "manual": "manual_approve",
+                                 "reject": "reject_refund"})
     )
 
 
@@ -59,19 +68,26 @@ def build_finance_agent():
         ctx["evidence"] = res["evidence"]
         ctx["sources"] = [h.get("title", "") for h in res.get("hits", [])]
 
+    def node_analyze(ctx):
+        # 财报指标计算（真实数据：营收/净利/毛利/同比环比/趋势）
+        ctx["analysis"] = tools.tool_analyze_financials(ctx["query"])
+
     def node_generate(ctx):
-        ctx["answer"] = tools.tool_generate_answer(ctx["query"], ctx["evidence"])["answer"]
+        ctx["answer"] = tools.tool_generate_answer(
+            ctx["query"], ctx["evidence"], ctx.get("analysis"))["answer"]
 
     def node_check(ctx):
-        violations = tools.tool_compliance_check(ctx["answer"])["violations"]
+        violations = tools.tool_compliance_check(ctx["query"], ctx["answer"])["violations"]
         if violations:
-            raise ValueError(f"命中合规红线：{violations[0]}")
+            ctx["violations"] = violations
+            raise ValueError(f"命中合规红线：{violations[0]['name']}")
         return "pass"
 
     def node_deliver(ctx):
         tools.tool_deliver(ctx["answer"])
 
     def node_reject(ctx):
+        ctx["rejected"] = True
         ctx["answer"] = "（合规免责声明）本内容仅供参考，不构成投资建议，市场有风险，投资需谨慎。"
         print("      [兜底] 输出被拦截，返回标准免责声明")
 
@@ -80,7 +96,8 @@ def build_finance_agent():
 
     wf = (
         Workflow("金融投研Agent", start="retrieve")
-        .add_node("retrieve", node_retrieve, next="generate")
+        .add_node("retrieve", node_retrieve, next="analyze")
+        .add_node("analyze", node_analyze, next="generate")
         .add_node("generate", node_generate, next="check")
         .add_node("check", guarded_check, fallback=node_reject)  # 合规闸门带兜底
         .add_node("deliver", node_deliver)
@@ -95,7 +112,11 @@ def build_finance_agent():
 # =====================================================================
 def build_office_agent():
     def node_create(ctx):
-        tools.tool_create_approval(ctx["approval_id"], ctx["applicant"])
+        chain = tools.tool_create_approval(
+            ctx["approval_id"], ctx["applicant"],
+            approval_type=ctx.get("approval_type", "leave"),
+            params=ctx.get("params", {}))
+        ctx["chain"] = chain["chain"]
 
     def node_undo_create(ctx):
         tools.tool_undo_approval(ctx["approval_id"])
@@ -202,9 +223,9 @@ def build_qa_agent():
         # 仅金融场景强制合规校验；其他场景直通
         if ctx["scene"] != "finance":
             return "pass"
-        violations = tools.tool_compliance_check(ctx["answer"])["violations"]
+        violations = tools.tool_compliance_check(ctx["query"], ctx["answer"])["violations"]
         if violations:
-            raise ValueError(f"命中合规红线：{violations[0]}")
+            raise ValueError(f"命中合规红线：{violations[0]['name']}")
         return "pass"
 
     def node_deliver(ctx):

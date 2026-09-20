@@ -759,16 +759,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _run_ecommerce(self, p):
         order_id = p.get("order_id", "O1001")
-        amount = int(p.get("amount", 300))
         user_id = p.get("user_id", "U42")
+        reason = p.get("reason", "no_reason")
         request_id = p.get("request_id", "req-" + uuid.uuid4().hex[:6])
         idem_key = "refund-" + order_id + "-" + request_id
-        ctx = {"order_id": order_id, "amount": amount,
-               "user_id": user_id, "request_id": request_id}
+        ctx = {"order_id": order_id, "user_id": user_id,
+               "reason": reason, "request_id": request_id}
         AGENT_ECOMMERCE.run(ctx, idempotency_key=idem_key)
+        order = ctx.get("order", {})
+        policy = ctx.get("policy", {})
         return {
-            "order_id": order_id, "amount": amount, "request_id": request_id,
-            "idempotency_key": idem_key, "message": ctx.get("message", ""),
+            "order_id": order_id, "request_id": request_id,
+            "idempotency_key": idem_key,
+            "order": {"product": order.get("product_name"), "amount": order.get("amount"),
+                      "status": order.get("status")},
+            "decision": policy.get("decision"),
+            "message": ctx.get("message", ""),
             "result": ctx.get("result"),
         }
 
@@ -777,19 +783,28 @@ class Handler(BaseHTTPRequestHandler):
         ctx = {"query": query}
         AGENT_FINANCE.run(ctx)
         b = AGENT_FINANCE.breaker
+        analysis = ctx.get("analysis", {})
         return {
             "query": query, "answer": ctx.get("answer", ""),
             "evidence": ctx.get("evidence", ""),
             "sources": ctx.get("sources", []),
+            "company": analysis.get("company"), "code": analysis.get("code"),
+            "metrics": analysis.get("metrics", []),
+            "trend": analysis.get("trend", []),
+            "rejected": ctx.get("rejected", False),
+            "violations": [v.get("name") for v in ctx.get("violations", [])],
         }, {
             "state": b.state, "failures": b.failures,
             "threshold": b.failure_threshold, "recovery_timeout": b.recovery_timeout,
         }
 
     def _run_office(self, p):
+        approval_type = p.get("approval_type", "leave")
         base = {
             "approval_id": p.get("approval_id", "AP-001"),
             "applicant": p.get("applicant", "张三"),
+            "approval_type": approval_type,
+            "params": p.get("params", {}),
             "event_id": p.get("event_id", "EV-001"),
             "notice_id": p.get("notice_id", "NT-001"),
             "fail_notice": bool(p.get("fail_notice", False)),
@@ -797,7 +812,11 @@ class Handler(BaseHTTPRequestHandler):
         ctx = dict(base)
         try:
             AGENT_OFFICE.run(ctx)
-            return {"approval_id": base["approval_id"], "status": "成功", "compensated": False}
+            chain = ctx.get("chain", {})
+            return {"approval_id": base["approval_id"], "status": "成功",
+                    "compensated": False,
+                    "type": chain.get("type"), "level": chain.get("level"),
+                    "approvers": chain.get("approvers", [])}
         except Exception as e:
             return {"approval_id": base["approval_id"], "status": "失败并已补偿",
                     "compensated": True, "error": str(e)}
