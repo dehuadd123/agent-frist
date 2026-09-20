@@ -28,6 +28,10 @@
   POST /api/llm/retrieve       -> AI 智能检索（query + 可选上下文 -> LLM 回答）
   POST /api/llm/file_retrieve  -> 本地文件检索（上传解析 -> 内容直连 LLM）
   POST /api/llm/chat           -> OpenAI 兼容通用转发
+  # 业务功能（本地向量库打底 + 可选 LLM 增强）
+  POST /api/biz/ecommerce      -> 电商导购：约束解析 + 商品检索 + 过滤排序
+  POST /api/biz/finance_report -> 金融投研：财报指标提取 + 多季度趋势 + 溯源
+  POST /api/biz/office         -> 企业办公：制度/报销规则检索 + 结构化回答
   # 企业治理
   GET  /api/audit              -> 审计日志（全量操作留痕）
 """
@@ -54,6 +58,7 @@ import tools as _tools
 import agents as _agents
 import model_eng as _ml
 import multiparse as _mp
+import business as _biz
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATASET = os.path.join(_HERE, "data", "synth_dataset.json")
@@ -132,6 +137,8 @@ def _rag_search(query, scene, top_k=4):
 
 # 把真实 RAG 检索注入 Agent 工具层（打通知识底座与决策引擎）
 _tools.set_rag_search(_rag_search)
+# 把真实 RAG 检索注入业务层（金融/办公溯源用）
+_biz.set_rag_search(_rag_search)
 
 # ---------- 构建各 Agent 单例（熔断/幂等状态跨请求保持） ----------
 AGENT_ECOMMERCE = _agents.build_ecommerce_agent()
@@ -406,6 +413,23 @@ def _llm_retrieve(api_key, base_url, model, query, context=None, scene=None):
             "scene": scene or _guess_scene(query), "has_context": bool(context)}
 
 
+def _make_llm(req):
+    """从请求体构建业务层可用的 LLM 调用器（llm(messages) -> (content, err)）。
+
+    未配置 API Key 时返回 None，业务层退化为纯本地向量库检索（混合模式）。
+    """
+    api_key = (req.get("api_key") or "").strip()
+    if not api_key:
+        return None
+    base_url = req.get("base_url", DEFAULT_LLM_BASE)
+    model = req.get("model", DEFAULT_LLM_MODEL)
+
+    def _call(messages):
+        return _llm_chat(api_key, base_url, model, messages)
+
+    return _call
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -650,6 +674,38 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/ml/offline_eval":
             r = _ml.offline_evaluation()
             audit("system", "离线评测", "三场景 + 回归门禁")
+            self._json({"ok": True, **r})
+        elif p == "/api/biz/ecommerce":
+            query = (req.get("query") or "").strip()
+            if not query:
+                self._json({"error": "query 不能为空"}, 400)
+                return
+            try:
+                top_k = int(req.get("top_k", 5))
+            except (TypeError, ValueError):
+                top_k = 5
+            audit("user", "电商导购", f"{query} · top{top_k}")
+            r = _biz.ecommerce_search(query, top_k=top_k, llm=_make_llm(req))
+            self._json({"ok": True, **r})
+        elif p == "/api/biz/finance_report":
+            query = (req.get("query") or "").strip()
+            if not query:
+                self._json({"error": "query 不能为空"}, 400)
+                return
+            audit("user", "金融分析", query)
+            r = _biz.finance_report(query, llm=_make_llm(req))
+            self._json({"ok": True, **r})
+        elif p == "/api/biz/office":
+            query = (req.get("query") or "").strip()
+            if not query:
+                self._json({"error": "query 不能为空"}, 400)
+                return
+            try:
+                top_k = int(req.get("top_k", 3))
+            except (TypeError, ValueError):
+                top_k = 3
+            audit("user", "办公助手", f"{query} · top{top_k}")
+            r = _biz.office_assistant(query, top_k=top_k, llm=_make_llm(req))
             self._json({"ok": True, **r})
         else:
             self._json({"error": "not found"}, 404)
