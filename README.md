@@ -1,8 +1,8 @@
 # 企业级 LLM 实操平台 · AI 直连版
 
-> **AI 直连检索** × RAG 知识底座 × Agent 决策引擎 × 模型工程，四核闭环的**零依赖**企业级实操平台。
+> **AI 直连检索** × RAG 知识底座 × Agent 决策引擎 × 模型工程 × **业务功能**，五核闭环的**零依赖**企业级实操平台。
 > 纯 Python 标准库实现，`python server.py` 一行启动，不装任何包、不下载模型。
-> 本版在完整保留三核的基础上，检索能力改为**直连 DeepSeek 等主流大模型 API**，不再依赖本地向量库。
+> 本版在完整保留三核的基础上，检索能力改为**直连 DeepSeek 等主流大模型 API**，并新增三场景**业务功能**（电商导购 / 金融投研 / 企业办公）的具体实现——本地向量库检索打底 + 可选 LLM 增强的混合模式。
 
 ---
 
@@ -41,6 +41,7 @@ enterprise-platform-api/
 ├── agents.py                 # 三个业务 Agent（DAG 工作流定义）
 ├── orchestrator.py           # DAG 工作流编排器（拓扑排序/重试/熔断/Saga/幂等）
 ├── model_eng.py              # 模型工程全链路（调优/合规/路由/评测/A-B/幻觉/可观测）
+├── business.py               # 三场景业务功能（电商导购/金融投研/企业办公，混合模式）
 ├── common/
 │   ├── __init__.py           # 公共模块包标记
 │   ├── tokenizer.py          # 中英混合分词（中文 unigram+bigram）
@@ -53,8 +54,9 @@ enterprise-platform-api/
 │   └── hybrid.py             # 混合检索（BM25 + 稠密 + RRF 融合）
 ├── data/
 │   ├── synth_dataset.json    # 基础语料（8 文档 / 48 切片 / 32 黄金 QA）
-│   └── sample_files.json     # 内置多格式模拟文档（8 篇，启动自动预载）
-└── console.html              # 前端工作台（单文件，7 个 tab）
+│   ├── sample_files.json     # 内置多格式模拟文档（8 篇，启动自动预载）
+│   └── business_data.json    # 业务语料（24 商品 / 2 公司 6 季度财报 / 12 条办公制度）
+└── console.html              # 前端工作台（单文件，8 个 tab）
 ```
 
 ---
@@ -97,6 +99,9 @@ def main():
 | POST | `/api/llm/retrieve` | AI 智能问答（query → 直连 LLM 作答） |
 | POST | `/api/llm/file_retrieve` | 本地文件检索（上传解析 → 内容直连 LLM） |
 | POST | `/api/llm/chat` | OpenAI 兼容通用转发 |
+| POST | `/api/biz/ecommerce` | 电商导购：约束解析 + 商品检索 + 过滤排序 |
+| POST | `/api/biz/finance_report` | 金融投研：财报指标提取 + 多季度趋势 + 溯源 |
+| POST | `/api/biz/office` | 企业办公：制度/报销规则检索 + 结构化回答 |
 | POST | `/api/rag/upload` | 上传文档 → 多格式解析 → 关键词提取 → 入索引 |
 | POST | `/api/rag/search` | 本地混合检索（场景隔离 + 关键词高亮） |
 | POST | `/api/rag/chunking` / `/api/rag/eval` | 切片对比 / 质量基线 |
@@ -309,6 +314,37 @@ def rrf_fuse(rankings_list, k=60):
 
 ---
 
+### 3.14 `business.py` —— 三场景业务功能（混合模式）
+
+**作用**：三场景的**具体业务实现**，统一模式为「本地向量库检索打底 + 可选 LLM 增强」。加载 `data/business_data.json` 后构建商品 / 制度两套 `HybridRetriever` 索引；`set_rag_search(fn)` 提供金融 / 办公溯源的 RAG 注入点（由 `server.py` 启动时注入真实混合检索）。
+
+- **`ecommerce_search(query)`**：正则解析自然语言约束（`3000以内`/`4.5星以上`/品类）→ 商品混合检索 → 硬过滤 → 排序推荐 + 命中高亮。
+- **`finance_report(query)`**：识别公司 → 提取最新季度营收/净利/毛利 → 计算同比、环比与**可比口径累计同比**（H2 对齐，避免季度数不一致）→ 输出趋势研判 + 溯源。
+- **`office_assistant(query)`**：制度规则向量检索 → 结构化回答 + 细则溯源。
+
+**关键运行代码**（约束解析 + 可比口径同比）：
+
+```python
+def parse_constraints(query):
+    cons = {}
+    m = re.search(r"(?:(\d+(?:\.\d+)?)\s*元?\s*(?:以内|以下|之内|内))|"
+                  r"(?:不超过\s*(\d+(?:\.\d+)?))|(?:预算\s*(\d+(?:\.\d+)?))", query)
+    if m: cons["max_price"] = float(next(x for x in m.groups() if x))
+    # 评分：4.5星以上；品类：CATEGORY_KEYS 命中
+    return cons
+
+def finance_report(query, llm=None):
+    quarters = company["quarters"]
+    # 可比口径同比：2025 H2 vs 2024 H2（各 2 季度对齐）
+    h2_2025 = [q for q in quarters if q["quarter"] in ("2025Q3", "2025Q4")]
+    h2_2024 = [q for q in quarters if q["quarter"] in ("2024Q3", "2024Q4")]
+    rev_yoy = round((sum(q["revenue"] for q in h2_2025)
+                     - sum(q["revenue"] for q in h2_2024))
+                    / sum(q["revenue"] for q in h2_2024) * 100, 1)
+```
+
+---
+
 ## 四、核心功能与关键运行代码
 
 ### 功能 1：AI 直连检索（本版核心新增）
@@ -423,6 +459,28 @@ def hallucination_defense(query, hits, answer, citations=None):
 
 ---
 
+### 功能 6：三场景业务功能（本地向量库 + 可选 LLM 增强）
+
+**作用**：三场景的具体业务实现，本地向量库（BM25 + TF-IDF 稠密 + RRF）检索打底，前端已保存 API Key 时自动叠加 LLM 增强（混合模式），未配置则纯本地检索优雅降级。
+
+- **电商导购**：`POST /api/biz/ecommerce` —— 自然语言约束解析 + 商品混合检索 + 硬过滤排序，返回结构化商品列表 + 命中高亮。
+- **金融投研**：`POST /api/biz/finance_report` —— 财报指标提取 + 多季度趋势 + 可比口径同比 + 溯源。
+- **企业办公**：`POST /api/biz/office` —— 制度 / 报销 / 考勤规则检索 + 结构化回答。
+
+**关键运行代码**（业务层 LLM 注入 + 优雅降级）：
+
+```python
+def _make_llm(req):
+    api_key = (req.get("api_key") or "").strip()
+    if not api_key:
+        return None                        # 未配置 Key → 纯本地向量库检索
+    base_url = req.get("base_url", DEFAULT_LLM_BASE)
+    model = req.get("model", DEFAULT_LLM_MODEL)
+    return lambda messages: _llm_chat(api_key, base_url, model, messages)
+```
+
+---
+
 ## 五、运行方式
 
 ```bash
@@ -433,9 +491,9 @@ python server.py
 PORT=8080 python server.py
 ```
 
-打开浏览器访问 `http://127.0.0.1:8000`，进入工作台（7 个 tab：总览 / 智能助手 / **AI 智能检索** / RAG 知识底座 / Agent 决策引擎 / 模型工程 / 企业治理）。
+打开浏览器访问 `http://127.0.0.1:8000`，进入工作台（8 个 tab：总览 / 智能助手 / **AI 智能检索** / **业务功能** / RAG 知识底座 / Agent 决策引擎 / 模型工程 / 企业治理）。
 
-**使用 AI 智能检索前**：在「AI 智能检索」页顶部填写 DeepSeek（或任意 OpenAI 兼容）API Key 并保存（Key 仅存本地浏览器），即可开始提问或上传文件检索。
+**使用 AI 智能检索前**：在「AI 智能检索」页顶部填写 DeepSeek（或任意 OpenAI 兼容）API Key 并保存（Key 仅存本地浏览器），即可开始提问或上传文件检索。**业务功能**页会复用这份配置：已保存 Key 时三场景自动叠加 LLM 增强，未保存则纯本地向量库检索。
 
 ---
 
