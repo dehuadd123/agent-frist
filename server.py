@@ -902,7 +902,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", "8000"))
     server = HTTPServer(("0.0.0.0", port), Handler)
-    print("企业级 LLM 实操平台已启动: http://0.0.0.0:%d" % port)
+    print("企业级 LLM 智能应用平台已启动: http://0.0.0.0:%d" % port)
     print("知识底座：%d 篇文档 -> %d 切片，黄金 QA %d 条；工具 %d 个"
           % (len(DOCS), len(CHUNKS), len(QA_PAIRS), len(_tools.REGISTRY._tools)))
     server.serve_forever()
