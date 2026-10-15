@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,6 +28,50 @@ APPROVAL_RULES = _BIZ.get("approval_rules", {})
 
 # 退款原因枚举 -> 中文
 REFUND_REASONS = {"quality": "质量问题", "logistics": "物流问题", "no_reason": "无理由退货"}
+
+
+# =====================================================================
+# 订单状态机（实时状态管理）：合法流转 + 中文映射 + 落盘持久化
+# =====================================================================
+ORDER_STATUS = ("paid", "shipped", "delivered", "refunded", "cancelled")
+ORDER_STATUS_CN = {
+    "paid": "已付款/待发货", "shipped": "已发货", "delivered": "已签收",
+    "refunded": "已退款", "cancelled": "已取消",
+}
+# 合法状态流转：当前状态 -> 允许进入的下一状态（终态 refunded/cancelled 不可再变）
+_VALID_TRANSITIONS = {
+    "paid": ("shipped", "refunded", "cancelled"),
+    "shipped": ("delivered", "refunded"),
+    "delivered": ("refunded",),
+    "refunded": (),
+    "cancelled": (),
+}
+_ORDERS_RUNTIME = os.path.join(_HERE, "data", "orders_runtime.json")
+
+
+def _persist_orders():
+    """把内存订单库落盘，使状态实时更新在服务重启后依然生效。"""
+    try:
+        with open(_ORDERS_RUNTIME, "w", encoding="utf-8") as f:
+            json.dump(list(_ORDER_DB.values()), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"      [工具] 订单状态落盘失败: {e}")
+
+
+def _load_orders_runtime():
+    """启动时加载运行时订单快照，覆盖内置订单，实现跨重启状态保持。"""
+    if not os.path.exists(_ORDERS_RUNTIME):
+        return
+    try:
+        with open(_ORDERS_RUNTIME, encoding="utf-8") as f:
+            for o in json.load(f):
+                _ORDER_DB[o["order_id"]] = o
+        print(f"      [工具] 已加载运行时订单状态（{len(_ORDER_DB)} 单）")
+    except Exception:
+        pass
+
+
+_load_orders_runtime()
 
 
 class Tool:
@@ -178,6 +223,58 @@ def tool_notify_user(user_id: str, message: str):
     return {"sent": True}
 
 
+def tool_list_orders():
+    """列出全部订单及其「实时」状态（只读）。"""
+    rows = []
+    for oid in sorted(_ORDER_DB):
+        o = _ORDER_DB[oid]
+        st = o.get("status")
+        rows.append({
+            "order_id": oid, "user_id": o.get("user_id"),
+            "product_name": o.get("product_name"), "amount": o.get("amount"),
+            "status": st, "status_cn": ORDER_STATUS_CN.get(st, st),
+            "pay_time": o.get("pay_time"), "ship_time": o.get("ship_time"),
+            "sign_time": o.get("sign_time"), "refund_time": o.get("refund_time"),
+            "cancel_time": o.get("cancel_time"),
+        })
+    return {"orders": rows, "total": len(rows)}
+
+
+def tool_update_order_status(order_id: str, new_status: str):
+    """实时更新订单状态（写）。状态机校验 + 关联时间戳自动联动 + 落盘持久化。
+
+    合法流转：paid -> shipped/refunded/cancelled；shipped -> delivered/refunded；
+             delivered -> refunded；refunded/cancelled 为终态不可再变。
+    """
+    order = _ORDER_DB.get(order_id)
+    if not order:
+        return {"ok": False, "error": "订单不存在: %s" % order_id}
+    cur = order.get("status")
+    if new_status not in ORDER_STATUS:
+        return {"ok": False, "error": "非法状态: %s（可选: %s）" % (new_status, "、".join(ORDER_STATUS))}
+    if new_status == cur:
+        return {"ok": True, "changed": False, "order_id": order_id, "status": cur,
+                "status_cn": ORDER_STATUS_CN.get(cur, cur)}
+    if new_status not in _VALID_TRANSITIONS.get(cur, ()):
+        allow = "、".join(_VALID_TRANSITIONS.get(cur, ())) or "无（终态）"
+        return {"ok": False, "error": "非法状态流转: %s -> %s（允许: %s）" % (cur, new_status, allow)}
+    # 更新状态 + 关联时间戳
+    now = time.strftime("%Y-%m-%d %H:%M")
+    order["status"] = new_status
+    if new_status == "shipped":
+        order["ship_time"] = now
+    elif new_status == "delivered":
+        order["sign_time"] = now
+    elif new_status == "refunded":
+        order["refund_time"] = now
+    elif new_status == "cancelled":
+        order["cancel_time"] = now
+    _persist_orders()
+    print(f"      [工具] update_order_status({order_id}) {cur} -> {new_status}")
+    return {"ok": True, "changed": True, "order_id": order_id, "from": cur,
+            "to": new_status, "status_cn": ORDER_STATUS_CN.get(new_status, new_status)}
+
+
 register("query_order", tool_query_order, "查询订单详情（金额/状态/商品），用于退款审批判定",
          {"type": "object",
           "properties": {"order_id": {"type": "string", "description": "订单号"}},
@@ -207,6 +304,17 @@ register("notify_user", tool_notify_user, "发送消息通知用户",
          {"type": "object",
           "properties": {"user_id": {"type": "string"}, "message": {"type": "string"}},
           "required": ["user_id", "message"]}, side_effect="write", idempotent=True)
+
+register("list_orders", tool_list_orders, "列出全部订单及实时状态（只读）",
+         {"type": "object", "properties": {}}, side_effect="read")
+
+register("update_order_status", tool_update_order_status,
+         "实时更新订单状态（状态机校验 + 时间戳联动 + 落盘）",
+         {"type": "object",
+          "properties": {"order_id": {"type": "string", "description": "订单号"},
+                         "new_status": {"type": "string", "enum": list(ORDER_STATUS),
+                                        "description": "目标状态"}},
+          "required": ["order_id", "new_status"]}, side_effect="write", idempotent=True)
 
 
 # =====================================================================

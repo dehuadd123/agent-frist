@@ -24,6 +24,10 @@
   # Agent 决策引擎
   GET  /api/agent/tools        -> 工具注册表（Function Calling 声明）
   POST /api/agent/run          -> 执行三场景 + 问答 Agent 工作流
+  # 订单状态实时管理
+  GET  /api/orders             -> 列出全部订单及实时状态
+  POST /api/order/query        -> 按订单号查询订单
+  POST /api/order/update       -> 实时更新订单状态（状态机校验 + 落盘）
   # AI 直连检索（DeepSeek 等主流 API，不依赖本地向量库）
   POST /api/llm/retrieve       -> AI 智能检索（query + 可选上下文 -> LLM 回答）
   POST /api/llm/file_retrieve  -> 本地文件检索（上传解析 -> 内容直连 LLM）
@@ -46,7 +50,7 @@ import uuid
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,11 +63,13 @@ import agents as _agents
 import model_eng as _ml
 import multiparse as _mp
 import business as _biz
+import auth as _auth
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATASET = os.path.join(_HERE, "data", "synth_dataset.json")
 SAMPLE_FILE = os.path.join(_HERE, "data", "sample_files.json")
 HTML = os.path.join(_HERE, "console.html")
+PERSISTED_DOCS = os.path.join(_HERE, "data", "persisted_docs.json")  # 上传文档持久化
 
 SCENES = {"ecommerce": "电商导购", "finance": "金融投研", "office": "企业办公"}
 SCENE_FEATURES = {
@@ -91,10 +97,15 @@ for _d in DOCS:
 
 RETRIEVER = HybridRetriever(CHUNKS)
 _DOC_BY_ID = {d["id"]: d for d in DOCS}
+_BOOTING = True  # 启动加载阶段标志：期间 _persist_docs 不写盘，避免覆盖持久化文档
 
 
 def _add_document(doc):
-    """把一篇文档解析切片后追加进检索索引，并重建混合检索器。"""
+    """把一篇文档解析切片后追加进检索索引，并重建混合检索器。
+
+    用户上传的文档（id 以 upload_ 开头）会实时落盘到 persisted_docs.json，
+    服务重启后自动重新加载，实现「向量/索引持久化」——文档与检索能力不因重启丢失。
+    """
     global RETRIEVER
     DOCS.append(doc)
     new_chunks = chunk_structure(doc["content"])
@@ -104,7 +115,40 @@ def _add_document(doc):
     CHUNK_META.extend([doc["id"]] * len(new_chunks))
     _DOC_BY_ID[doc["id"]] = doc
     RETRIEVER = HybridRetriever(CHUNKS)
+    _persist_docs()
     return len(new_chunks)
+
+
+def _persist_docs():
+    """把用户上传的运行时文档落盘（内置语料/业务数据本就在 JSON 中，无需重复持久化）。
+
+    启动加载阶段（_BOOTING）跳过写盘，避免覆盖磁盘上已有的持久化文档。
+    """
+    if _BOOTING:
+        return
+    runtime = [d for d in DOCS if d["id"].startswith("upload_")]
+    try:
+        with open(PERSISTED_DOCS, "w", encoding="utf-8") as f:
+            json.dump(runtime, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def _load_persisted_docs():
+    """启动时重新加载上次上传的文档，恢复索引。"""
+    if not os.path.exists(PERSISTED_DOCS):
+        return 0
+    try:
+        with open(PERSISTED_DOCS, encoding="utf-8") as f:
+            docs = json.load(f)
+    except Exception:
+        return 0
+    loaded = 0
+    for d in docs:
+        if d.get("id") and d["id"] not in _DOC_BY_ID:
+            _add_document(d)
+            loaded += 1
+    return loaded
 
 
 def _guess_scene(text):
@@ -242,6 +286,12 @@ def _preload_samples():
 
 _preload_samples()
 
+# 启动时恢复上次上传的文档（向量/索引持久化）
+_PERSISTED_LOADED = _load_persisted_docs()
+_BOOTING = False  # 启动完成，之后上传文档正常落盘
+if _PERSISTED_LOADED:
+    audit("system", "恢复持久化文档", f"重新加载 {_PERSISTED_LOADED} 篇上传文档")
+
 
 def _run_chunking():
     TOP_K = 10
@@ -355,6 +405,15 @@ DEFAULT_LLM_BASE = "https://api.deepseek.com"
 DEFAULT_LLM_MODEL = "deepseek-chat"
 MAX_CONTEXT_CHARS = 12000  # 本地文件上下文上限，避免超 token
 
+# 密钥托管：服务端环境变量 DEEPSEEK_API_KEY 优先（生产推荐），
+# 未设置时回退到前端传入的 api_key（本地开发兼容，仍不落盘）。
+SERVER_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+
+def _resolve_api_key(req):
+    """解析 API Key：服务端托管优先，否则用前端传入。"""
+    return (req.get("api_key") or "").strip() or SERVER_API_KEY
+
 
 def _llm_chat(api_key, base_url, model, messages, temperature=0.3, max_tokens=None):
     """调用 OpenAI 兼容 chat/completions 接口，返回 (content, err)。API Key 由前端传入，不落盘。"""
@@ -416,9 +475,10 @@ def _llm_retrieve(api_key, base_url, model, query, context=None, scene=None):
 def _make_llm(req):
     """从请求体构建业务层可用的 LLM 调用器（llm(messages) -> (content, err)）。
 
-    未配置 API Key 时返回 None，业务层退化为纯本地向量库检索（混合模式）。
+    密钥托管：服务端 DEEPSEEK_API_KEY 优先；两者皆无时返回 None，
+    业务层退化为纯本地向量库检索（混合模式）。
     """
-    api_key = (req.get("api_key") or "").strip()
+    api_key = _resolve_api_key(req)
     if not api_key:
         return None
     base_url = req.get("base_url", DEFAULT_LLM_BASE)
@@ -431,6 +491,59 @@ def _make_llm(req):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _extract_token(self, parsed):
+        """从多来源提取 JWT：自定义头 X-Auth-Token > ?token= > Authorization。
+
+        重要：托管平台网关会覆盖 Authorization 头（注入平台自身 JWT），
+        故业务 Token 必须走平台不干涉的 X-Auth-Token 头或 query 参数。
+        """
+        xt = self.headers.get("X-Auth-Token", "")
+        if xt:
+            return xt.strip()
+        qs = parse_qs(parsed.query)
+        t = (qs.get("token") or [""])[0].strip()
+        if t:
+            return t
+        authz = self.headers.get("Authorization", "")
+        if authz:
+            if authz.startswith("Bearer "):
+                return authz[7:].strip()
+            if authz.startswith("Bearer"):
+                return authz[6:].strip()
+        return ""
+
+    def _gate(self, method):
+        """安全网关：限流 -> 鉴权 -> RBAC。返回 False 表示已拦截（响应已写出）。"""
+        parsed = urlparse(self.path)
+        p = parsed.path
+        ip = self.client_address[0]
+        self._actor = "anonymous"
+
+        # 1) 限流（按 IP + 接口分级）
+        ok, limit = _auth.check_rate(ip, p)
+        if not ok:
+            self._json({"error": "请求过于频繁，请稍后再试",
+                        "code": "rate_limited", "limit_per_min": limit}, 429)
+            return False
+
+        # 2) 鉴权 + RBAC
+        level = _auth.route_level(method, p)
+        if level == 0:
+            return True
+        token = self._extract_token(parsed)
+        payload = _auth.verify_token(token) if token else None
+        if not payload:
+            self._json({"error": "未登录或登录已过期", "code": "unauthorized",
+                        "hint": "请登录后携带 Bearer Token 访问"}, 401)
+            return False
+        self._actor = payload.get("sub", "user")
+        self._role = payload.get("role", "viewer")
+        if _auth.ROLE_LEVEL.get(self._role, 0) < level:
+            self._json({"error": "权限不足", "code": "forbidden",
+                        "required_role": level}, 403)
+            return False
+        return True
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -455,12 +568,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         p = parsed.path
+        if not self._gate("GET"):
+            return
         if p in ("/", "/index.html", "/console", "/enterprise"):
             self._serve_html()
         elif p == "/api/health":
             self._json({"ok": True, "service": "llm-enterprise-platform",
                         "docs": len(DOCS), "chunks": len(CHUNKS),
                         "qa": len(QA_PAIRS), "tools": len(_tools.REGISTRY._tools)})
+        elif p == "/api/auth/me":
+            u = _auth.get_user(self._actor)
+            self._json({"ok": True, "user": u,
+                        "role_name": _auth.ROLE_NAMES.get(u["role"]) if u else None})
+        elif p == "/api/auth/users":
+            self._json({"ok": True, "users": _auth.list_users(),
+                        "role_names": _auth.ROLE_NAMES})
         elif p == "/api/overview":
             self._json({
                 "scenes": [{"key": k, "name": v["name"], "feature": v["feature"]}
@@ -496,6 +618,8 @@ class Handler(BaseHTTPRequestHandler):
                 "tools": _tools.REGISTRY.to_openai_tools(),
                 "table": _tools.REGISTRY.table(),
             })
+        elif p == "/api/orders":
+            self._json({"ok": True, **_tools.tool_list_orders()})
         elif p == "/api/audit":
             self._json({"audit": list(reversed(AUDIT))})
         elif p == "/api/ml/meta":
@@ -514,6 +638,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if not self._gate("POST"):
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -522,7 +648,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         p = parsed.path
-        if p == "/api/rag/chunking":
+        if p == "/api/auth/login":
+            self._handle_login(req)
+        elif p == "/api/auth/users":
+            self._handle_create_user(req)
+        elif p == "/api/rag/chunking":
             r = _run_chunking()
             audit("system", "切片对比实验", f"{len(r)} 策略 × {len(QA_PAIRS)} QA")
             self._json({"ok": True, "results": r, "qa_count": len(QA_PAIRS)})
@@ -542,7 +672,7 @@ class Handler(BaseHTTPRequestHandler):
                 top_k = int(req.get("top_k", 5))
             except (TypeError, ValueError):
                 top_k = 5
-            audit("user", "检索", f"{query} @{scene}/{mode}")
+            audit(self._actor, "检索", f"{query} @{scene}/{mode}")
             self._json({"ok": True, **_run_search(query, scene, mode, top_k)})
         elif p == "/api/rag/document":
             doc_id = (req.get("doc_id") or "").strip()
@@ -551,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
             if r is None:
                 self._json({"error": "文档不存在"}, 404)
                 return
-            audit("user", "预览文档", f"{r['title']} · query={query or '-'}")
+            audit(self._actor, "预览文档", f"{r['title']} · query={query or '-'}")
             self._json({"ok": True, **r})
         elif p == "/api/rag/import_sample":
             fname = (req.get("file") or "").strip()
@@ -568,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
                    "format": sample["format"], "content": parsed["text"]}
             n = _add_document(doc)
             IMPORTED.add(fname)
-            audit("user", "导入模拟文档", f"{fname} [{sample['format']}] -> {n} 切片")
+            audit(self._actor, "导入模拟文档", f"{fname} [{sample['format']}] -> {n} 切片")
             self._json({"ok": True, "file": fname, "format": sample["format"],
                         "note": sample["note"], "scene": sample["scene"],
                         "chunks_added": n, "total_chunks": len(CHUNKS)})
@@ -596,7 +726,7 @@ class Handler(BaseHTTPRequestHandler):
                    "format": parsed["ext"].lstrip("."), "content": text}
             n = _add_document(doc)
             keywords = _extract_keywords(text)
-            audit("user", "上传文档", f"{filename} [{parsed['format']}] @{scene} -> {n} 切片")
+            audit(self._actor, "上传文档", f"{filename} [{parsed['format']}] @{scene} -> {n} 切片")
             self._json({"ok": True, "doc_id": doc_id, "filename": filename,
                         "format": parsed["format"], "note": parsed["note"],
                         "scene": scene, "chunks_added": n,
@@ -606,8 +736,26 @@ class Handler(BaseHTTPRequestHandler):
                         "preview": text[:200]})
         elif p == "/api/agent/run":
             self._handle_agent_run(req)
+        elif p == "/api/order/update":
+            order_id = (req.get("order_id") or "").strip()
+            new_status = (req.get("status") or "").strip()
+            if not order_id or not new_status:
+                self._json({"error": "order_id 与 status 不能为空"}, 400)
+                return
+            r = _tools.tool_update_order_status(order_id, new_status)
+            audit(self._actor, "订单状态更新", f"{order_id} -> {new_status}",
+                  result="ok" if r.get("ok") else "error")
+            self._json(r)
+        elif p == "/api/order/query":
+            order_id = (req.get("order_id") or "").strip()
+            if not order_id:
+                self._json({"error": "order_id 不能为空"}, 400)
+                return
+            order = _tools.tool_query_order(order_id)
+            found = order.get("status") != "not_found"
+            self._json({"ok": found, "order": order})
         elif p == "/api/llm/retrieve":
-            api_key = req.get("api_key", "")
+            api_key = _resolve_api_key(req)
             base_url = req.get("base_url", DEFAULT_LLM_BASE)
             model = req.get("model", DEFAULT_LLM_MODEL)
             query = (req.get("query") or "").strip()
@@ -616,11 +764,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             context = req.get("context", "")
             scene = req.get("scene", "")
-            audit("user", "AI 检索", f"{query} · 直连 {model} · 上下文 {len(context)} 字符")
+            audit(self._actor, "AI 检索", f"{query} · 直连 {model} · 上下文 {len(context)} 字符")
             r = _llm_retrieve(api_key, base_url, model, query, context, scene)
             self._json(r)
         elif p == "/api/llm/file_retrieve":
-            api_key = req.get("api_key", "")
+            api_key = _resolve_api_key(req)
             base_url = req.get("base_url", DEFAULT_LLM_BASE)
             model = req.get("model", DEFAULT_LLM_MODEL)
             query = (req.get("query") or "").strip()
@@ -639,7 +787,7 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 self._json({"ok": False, "error": "未能从文件中解析出文本内容"})
                 return
-            audit("user", "AI 文件检索", f"{filename} [{parsed['format']}] · 直连 {model}")
+            audit(self._actor, "AI 文件检索", f"{filename} [{parsed['format']}] · 直连 {model}")
             r = _llm_retrieve(api_key, base_url, model, query, text,
                               req.get("scene", "") or _guess_scene(text))
             r["filename"] = filename
@@ -648,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             r["context_chars"] = len(text)
             self._json(r)
         elif p == "/api/llm/chat":
-            api_key = req.get("api_key", "")
+            api_key = _resolve_api_key(req)
             base_url = req.get("base_url", DEFAULT_LLM_BASE)
             model = req.get("model", DEFAULT_LLM_MODEL)
             messages = req.get("messages") or []
@@ -684,7 +832,7 @@ class Handler(BaseHTTPRequestHandler):
                 top_k = int(req.get("top_k", 5))
             except (TypeError, ValueError):
                 top_k = 5
-            audit("user", "电商导购", f"{query} · top{top_k}")
+            audit(self._actor, "电商导购", f"{query} · top{top_k}")
             r = _biz.ecommerce_search(query, top_k=top_k, llm=_make_llm(req))
             self._json({"ok": True, **r})
         elif p == "/api/biz/finance_report":
@@ -692,7 +840,7 @@ class Handler(BaseHTTPRequestHandler):
             if not query:
                 self._json({"error": "query 不能为空"}, 400)
                 return
-            audit("user", "金融分析", query)
+            audit(self._actor, "金融分析", query)
             r = _biz.finance_report(query, llm=_make_llm(req))
             self._json({"ok": True, **r})
         elif p == "/api/biz/office":
@@ -704,11 +852,41 @@ class Handler(BaseHTTPRequestHandler):
                 top_k = int(req.get("top_k", 3))
             except (TypeError, ValueError):
                 top_k = 3
-            audit("user", "办公助手", f"{query} · top{top_k}")
+            audit(self._actor, "办公助手", f"{query} · top{top_k}")
             r = _biz.office_assistant(query, top_k=top_k, llm=_make_llm(req))
             self._json({"ok": True, **r})
         else:
             self._json({"error": "not found"}, 404)
+
+    # ---------- 认证 ----------
+    def _handle_login(self, req):
+        username = (req.get("username") or "").strip()
+        password = req.get("password", "")
+        if not username or not password:
+            self._json({"error": "用户名与密码不能为空"}, 400)
+            return
+        u = _auth.authenticate(username, password)
+        if not u:
+            audit("auth", "登录失败", username, result="error")
+            self._json({"error": "用户名或密码错误"}, 401)
+            return
+        token = _auth.issue_token({"sub": username, "role": u["role"], "name": u["name"]})
+        audit("auth", "登录成功", "%s (%s)" % (username, _auth.ROLE_NAMES.get(u["role"], u["role"])))
+        self._json({"ok": True, "token": token, "expires_in": _auth.JWT_EXPIRE,
+                    "user": u, "role_name": _auth.ROLE_NAMES.get(u["role"])})
+
+    def _handle_create_user(self, req):
+        username = (req.get("username") or "").strip()
+        password = req.get("password", "")
+        role = req.get("role", "viewer")
+        name = (req.get("name") or "").strip()
+        ok, msg = _auth.create_user(username, password, role, name)
+        if not ok:
+            self._json({"error": msg}, 400)
+            return
+        audit(self._actor, "创建用户", "%s (%s)" % (username, role))
+        self._json({"ok": True, "username": username, "role": role,
+                    "role_name": _auth.ROLE_NAMES.get(role)})
 
     # ---------- Agent 执行 ----------
     def _handle_agent_run(self, req):
@@ -741,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
             if any("合规红线" in l for l in logs):
                 _ml.OBS.record_metric("compliance_violation", 1)
             _ml.OBS.finish_trace(trace, latency, tokens=len(logs) * 40, status="ok")
-            audit("user", "Agent执行", f"{scenario} -> {json.dumps(params, ensure_ascii=False)[:80]}")
+            audit(self._actor, "Agent执行", f"{scenario} -> {json.dumps(params, ensure_ascii=False)[:80]}")
             self._json({
                 "ok": True, "scenario": scenario, "logs": logs,
                 "result": result, "breaker": breaker_state,
@@ -751,7 +929,7 @@ class Handler(BaseHTTPRequestHandler):
             latency = (time.time() - t0) * 1000
             _ml.OBS.record_metric("error", 1)
             _ml.OBS.finish_trace(trace, latency, status="error")
-            audit("user", "Agent执行", f"{scenario}", result="error")
+            audit(self._actor, "Agent执行", f"{scenario}", result="error")
             self._json({
                 "ok": False, "scenario": scenario, "logs": logs,
                 "error": str(e), "breaker": breaker_state,
@@ -849,7 +1027,7 @@ class Handler(BaseHTTPRequestHandler):
         cc = _ml.check_citation_compliance(citations) if citations else None
         passed = not red_hits and (cc is None or not cc["hallucinated"])
         verdict = "通过" if passed else "拦截"
-        audit("user", "合规扫描", f"{answer[:40]} -> {verdict}")
+        audit(self._actor, "合规扫描", f"{answer[:40]} -> {verdict}")
         self._json({
             "ok": True, "answer": answer, "red_line_hits": red_hits,
             "citation": cc, "verdict": verdict, "passed": passed,
@@ -862,7 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         route = _ml.route_request(text)
         completion = _ml.run_task_completion()
-        audit("user", "意图路由", f"{text[:40]} -> {route['level']}")
+        audit(self._actor, "意图路由", f"{text[:40]} -> {route['level']}")
         self._json({"ok": True, "route": route, "completion": completion})
 
     def _handle_ml_abtest(self, req):
@@ -892,7 +1070,7 @@ class Handler(BaseHTTPRequestHandler):
                           "cell": c["cell"]} for i, c in enumerate(_ml.FINANCE_CORPUS[:2])]
         answer = "根据检索证据：" + ("；".join(h["text"][:50] for h in hits[:2]) if hits else "无证据")
         r = _ml.hallucination_defense(query, hits, answer, citations)
-        audit("user", "幻觉防御", f"{query} @{mode}")
+        audit(self._actor, "幻觉防御", f"{query} @{mode}")
         self._json({"ok": True, **r})
 
     def log_message(self, *args):
@@ -905,6 +1083,9 @@ def main():
     print("企业级 LLM 智能应用平台已启动: http://0.0.0.0:%d" % port)
     print("知识底座：%d 篇文档 -> %d 切片，黄金 QA %d 条；工具 %d 个"
           % (len(DOCS), len(CHUNKS), len(QA_PAIRS), len(_tools.REGISTRY._tools)))
+    print("安全网关：JWT 鉴权 + RBAC 三角色 + 接口分级限流 已启用")
+    print("密钥托管：%s" % ("服务端 DEEPSEEK_API_KEY" if SERVER_API_KEY else "前端传入（未设 DEEPSEEK_API_KEY）"))
+    print("向量持久化：本次恢复 %d 篇上传文档" % _PERSISTED_LOADED)
     server.serve_forever()
 
 

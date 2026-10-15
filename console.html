@@ -173,6 +173,33 @@ details{margin-top:14px;border:1px solid var(--border);border-radius:10px;backgr
 summary{cursor:pointer;padding:12px 16px;font-weight:600;font-size:13.5px;user-select:none;color:var(--muted)}
 summary:hover{color:var(--text)}
 details[open] summary{border-bottom:1px solid var(--border2)}
+
+/* 登录遮罩层 */
+#loginMask{position:fixed;inset:0;z-index:1000;background:rgba(10,14,20,.82);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center}
+#loginMask.hidden{display:none}
+.login-card{width:400px;max-width:92vw;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:30px 32px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.login-card .lc-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;margin-bottom:6px}
+.login-card .lc-sub{color:var(--muted);font-size:12.5px;margin-bottom:22px}
+.login-card label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}
+.login-card input{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:14px;outline:none;transition:.15s}
+.login-card input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(88,166,255,.15)}
+.login-card .lc-btn{width:100%;margin-top:22px;background:linear-gradient(135deg,var(--blue),var(--purple));border:none;border-radius:8px;padding:11px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;transition:.15s}
+.login-card .lc-btn:hover{filter:brightness(1.1)}
+.login-card .lc-btn:disabled{opacity:.5;cursor:not-allowed}
+.login-card .lc-err{color:var(--red);font-size:12.5px;margin-top:12px;min-height:18px}
+.login-card .lc-hint{margin-top:16px;padding:10px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;font-size:11.5px;color:var(--muted);line-height:1.7}
+.login-card .lc-hint b{color:var(--text)}
+
+/* 顶栏用户信息 */
+.userbox{display:flex;align-items:center;gap:9px;font-size:12.5px;white-space:nowrap}
+.userbox .ub-role{color:var(--muted)}
+.userbox .ub-name{font-weight:600;color:var(--text)}
+.userbox .ub-logout{color:var(--muted);cursor:pointer;padding:5px 10px;border:1px solid var(--border);border-radius:8px;transition:.15s}
+.userbox .ub-logout:hover{color:var(--red);border-color:var(--red)}
+.role-chip{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.role-chip.admin{background:rgba(240,136,62,.15);color:#f0883e}
+.role-chip.operator{background:rgba(88,166,255,.15);color:var(--blue)}
+.role-chip.viewer{background:rgba(139,148,158,.18);color:var(--muted)}
 </style>
 </head>
 <body>
@@ -189,7 +216,31 @@ details[open] summary{border-bottom:1px solid var(--border2)}
     <a data-tab="governance">企业治理</a>
   </div>
   <div class="status-pill"><span class="sdot" id="sdot"></span><span id="sstat">连接中…</span></div>
+  <div class="userbox" id="userbox" style="display:none">
+    <span class="ub-name" id="ubName"></span>
+    <span class="role-chip" id="ubRole"></span>
+    <span class="ub-logout" id="ubLogout">退出</span>
+  </div>
 </div></div>
+
+<div id="loginMask">
+  <div class="login-card">
+    <div class="lc-logo"><span class="dot" style="width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));box-shadow:0 0 12px var(--blue)"></span>企业级 LLM 智能应用平台</div>
+    <div class="lc-sub">请登录后使用 · JWT 鉴权 + RBAC 权限控制 + API 限流</div>
+    <label>用户名</label>
+    <input id="loginUser" type="text" placeholder="admin" autocomplete="username">
+    <label>密码</label>
+    <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password">
+    <button class="lc-btn" id="loginBtn" onclick="doLogin()">登 录</button>
+    <div class="lc-err" id="loginErr"></div>
+    <div class="lc-hint">
+      演示账号（RBAC 三级权限）：<br>
+      <b>admin</b> / admin123 —— 管理员 · 全部权限<br>
+      <b>operator</b> / operator123 —— 运营 · 读写业务<br>
+      <b>viewer</b> / viewer123 —— 只读访客
+    </div>
+  </div>
+</div>
 
 <div class="wrap">
 
@@ -436,6 +487,37 @@ details[open] summary{border-bottom:1px solid var(--border2)}
     </div>
   </div>
 
+  <div class="card">
+    <h3>📦 订单状态实时管理 <span style="font-weight:400;font-size:12px;color:var(--muted)">（按订单号实时更改，状态机校验 + 自动落盘）</span></h3>
+    <div class="main-grid" style="margin-top:6px">
+      <div>
+        <div class="field"><label>订单号</label>
+          <select id="osOrder"></select>
+        </div>
+        <div class="field" style="margin-top:10px"><label>目标状态</label>
+          <select id="osStatus">
+            <option value="paid">已付款 / 待发货</option>
+            <option value="shipped">已发货</option>
+            <option value="delivered">已签收</option>
+            <option value="refunded">已退款</option>
+            <option value="cancelled">已取消</option>
+          </select>
+        </div>
+        <div class="hint" style="color:var(--muted);font-size:11.5px;margin:10px 0">流转规则：未发货→发货/退款/取消 · 已发货→签收/退款 · 已签收→退款 · 退款/取消为终态</div>
+        <div class="btn-row">
+          <button class="btn" id="osUpdate">更新状态</button>
+          <button class="btn sec" id="osRefresh">刷新列表</button>
+        </div>
+        <div class="result" id="osResult" style="margin-top:10px"></div>
+      </div>
+      <div>
+        <table><thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>状态</th></tr></thead>
+          <tbody id="osTable"><tr><td colspan="4" class="empty">点击「刷新列表」加载订单</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div class="main-grid">
     <div class="card">
       <h3>📊 金融投研 Agent</h3>
@@ -568,8 +650,54 @@ function setTab(t){
 }
 document.querySelectorAll('.nav a').forEach(a=>a.onclick=()=>setTab(a.dataset.tab));
 
-async function post(path,obj){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});return r.json();}
-async function get(path){const r=await fetch(path);return r.json();}
+async function post(path,obj){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json',...authHeader()},body:JSON.stringify(obj)});return parseResp(r,path);}
+async function get(path){const r=await fetch(path,{headers:{...authHeader()}});return parseResp(r,path);}
+
+// ---- 认证 ----
+const AUTH_KEY='auth_token';
+function authHeader(){const t=localStorage.getItem(AUTH_KEY);return t?{'X-Auth-Token':t}:{};}
+async function parseResp(r,path){
+  if(r.status===401){handle401();throw new Error('unauthorized: '+path);}
+  if(r.status===403){const d=await r.json().catch(()=>({}));alert('权限不足：当前角色无权访问该操作');throw new Error('forbidden');}
+  if(r.status===429){const d=await r.json().catch(()=>({}));alert('请求过于频繁，请稍后再试'+(d.limit_per_min?`（该接口每分钟上限 ${d.limit_per_min} 次）`:''));throw new Error('rate_limited');}
+  return r.json();
+}
+function showLogin(){$('#loginMask').classList.remove('hidden');}
+function hideLogin(){$('#loginMask').classList.add('hidden');}
+function showUser(u){
+  $('#ubName').textContent=u.name||u.username;
+  const chip=$('#ubRole');
+  chip.textContent=u.role==='admin'?'管理员':(u.role==='operator'?'运营':'只读');
+  chip.className='role-chip '+u.role;
+  $('#userbox').style.display='flex';
+}
+function hideUser(){$('#userbox').style.display='none';}
+function handle401(){localStorage.removeItem(AUTH_KEY);hideUser();showLogin();}
+async function doLogin(){
+  const u=$('#loginUser').value.trim(), p=$('#loginPass').value;
+  if(!u||!p){$('#loginErr').textContent='请输入用户名和密码';return;}
+  const btn=$('#loginBtn');btn.disabled=true;$('#loginErr').textContent='';
+  try{
+    const d=await post('/api/auth/login',{username:u,password:p});
+    if(d.ok){localStorage.setItem(AUTH_KEY,d.token);showUser(d.user);hideLogin();$('#loginPass').value='';initData();}
+    else{$('#loginErr').textContent=d.error||'登录失败';}
+  }catch(e){$('#loginErr').textContent='网络错误，请重试';}
+  btn.disabled=false;
+}
+$('#ubLogout').onclick=logout;
+function logout(){localStorage.removeItem(AUTH_KEY);hideUser();showLogin();}
+// 登录后加载需要鉴权的数据
+function initData(){overview();refreshOrders();loadRedLines();}
+// 启动：有 token 则校验并进入，否则显示登录
+(async function boot(){
+  const t=localStorage.getItem(AUTH_KEY);
+  if(!t){showLogin();return;}
+  try{
+    const d=await get('/api/auth/me');
+    if(d.ok&&d.user){showUser(d.user);hideLogin();initData();}
+    else{handle401();}
+  }catch(e){handle401();}
+})();
 
 function logClass(line){
   if(line.includes('完成'))return'lg-step';
@@ -644,7 +772,6 @@ async function overview(){
     ['🔧',s.tools,'可调用工具'],
   ].map(([e,v,l])=>'<div class="stat"><div class="sv">'+e+' '+v+'</div><div class="sl">'+l+'</div></div>').join('');
 }
-overview();
 
 // 智能助手
 function bindQaPreset(){
@@ -874,6 +1001,40 @@ async function runEc(repeat){
 $('#ecRun').onclick=()=>runEc(false);
 $('#ecRepeat').onclick=()=>runEc(true);
 
+// 订单状态实时管理
+const OS_CHIP={paid:['已付款/待发货','c-blue'],shipped:['已发货','c-cyan'],delivered:['已签收','c-green'],refunded:['已退款','c-orange'],cancelled:['已取消','c-red']};
+async function refreshOrders(){
+  const d=await get('/api/orders');
+  const rows=(d.orders||[]).map(o=>{
+    const [cn,cls]=OS_CHIP[o.status]||[o.status,'c-purple'];
+    return '<tr><td><b>'+o.order_id+'</b></td><td>'+o.product_name+'</td>'+
+      '<td class="num">¥'+o.amount+'</td>'+
+      '<td><span class="chip '+cls+'">'+cn+'</span></td></tr>';
+  }).join('');
+  $('#osTable').innerHTML=rows||'<tr><td colspan="4" class="empty">暂无订单</td></tr>';
+  // 同步填充订单号下拉
+  $('#osOrder').innerHTML=(d.orders||[]).map(o=>{
+    const [cn]=OS_CHIP[o.status]||[o.status];
+    return '<option value="'+o.order_id+'">'+o.order_id+' · '+o.product_name+'（'+cn+'）</option>';
+  }).join('');
+}
+$('#osRefresh').onclick=refreshOrders;
+$('#osUpdate').onclick=async()=>{
+  const order_id=$('#osOrder').value, status=$('#osStatus').value;
+  const d=await post('/api/order/update',{order_id,status});
+  let html='';
+  if(d.ok){
+    const [cn,cls]=OS_CHIP[d.to||d.status]||[d.to||d.status,'c-purple'];
+    const arrow=d.changed===false?'（状态未变）':('：'+d.from+' → '+d.to);
+    html='<div class="ritem"><b>'+d.order_id+'</b>'+arrow+'　<span class="chip '+cls+'">'+cn+'</span></div>';
+  } else {
+    html='<div class="ritem" style="color:var(--red)">'+d.error+'</div>';
+  }
+  const el=$('#osResult');el.classList.add('show');el.innerHTML='<div class="rhead">结果</div>'+html;
+  refreshOrders();
+};
+
+
 function renderFinance(d){
   renderLogs($('#fnLogs'),d.logs);
   renderBreaker($('#fnLamp'),$('#fnBstate'),$('#fnBinfo'),d.breaker);
@@ -933,7 +1094,6 @@ async function loadRedLines(){
   $('#mlRedLines').innerHTML='<table><tr><th>#</th><th>红线</th><th>判定</th></tr>'+
     m.red_lines.map(r=>'<tr><td>'+r.id+'</td><td><b>'+r.name+'</b></td><td style="color:var(--muted)">'+(r.keywords&&r.keywords.length?r.keywords.join('、'):(r.desc||'引用真实性校验'))+'</td></tr>').join('')+'</table>';
 }
-loadRedLines();
 
 // 准确率-延迟平衡曲线
 function drawTuningCurve(curve){

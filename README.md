@@ -37,9 +37,10 @@
 
 ```
 enterprise-platform-api/
-├── server.py                 # 统一 HTTP 服务（入口 + RAG/Agent/ML + LLM 直连接口）
+├── server.py                 # 统一 HTTP 服务（入口 + 安全网关 + RAG/Agent/ML + LLM 直连）
+├── auth.py                   # 安全模块：JWT 登录 + RBAC 三级角色 + API 限流（纯标准库）
 ├── multiparse.py             # 多格式文档解析（docx/xlsx/pptx/pdf/csv/json/html/图片）
-├── tools.py                  # 工具注册表（15 工具 Function Calling 声明）
+├── tools.py                  # 工具注册表（17 工具 Function Calling 声明，含订单状态机）
 ├── agents.py                 # 三个业务 Agent（DAG 工作流定义）
 ├── orchestrator.py           # DAG 工作流编排器（拓扑排序/重试/熔断/Saga/幂等）
 ├── model_eng.py              # 模型工程全链路（调优/合规/路由/评测/A-B/幻觉/可观测）
@@ -57,8 +58,10 @@ enterprise-platform-api/
 ├── data/
 │   ├── synth_dataset.json    # 基础语料（8 文档 / 48 切片 / 32 黄金 QA）
 │   ├── sample_files.json     # 内置多格式模拟文档（8 篇，启动自动预载）
-│   └── business_data.json    # 业务语料（24 商品 / 2 公司 6 季度财报 / 12 条办公制度）
-└── console.html              # 前端工作台（单文件，8 个 tab）
+│   ├── business_data.json    # 业务语料（24 商品 / 2 公司 6 季度财报 / 12 条办公制度）
+│   ├── users.json            # 用户库（首次启动生成，PBKDF2 密码哈希，不落明文）
+│   └── persisted_docs.json   # 上传文档持久化（重启自动恢复索引）
+└── console.html              # 前端工作台（单文件，8 个 tab + 登录门禁）
 ```
 
 ---
@@ -98,6 +101,9 @@ def main():
 
 | 方法 | 路径 | 作用 |
 |------|------|------|
+| POST | `/api/auth/login` | 登录（返回 JWT Token） |
+| GET | `/api/auth/me` | 当前登录用户信息 |
+| GET/POST | `/api/auth/users` | 用户列表 / 创建用户（仅 admin） |
 | POST | `/api/llm/retrieve` | AI 智能问答（query → 直连 LLM 作答） |
 | POST | `/api/llm/file_retrieve` | 本地文件检索（上传解析 → 内容直连 LLM） |
 | POST | `/api/llm/chat` | OpenAI 兼容通用转发 |
@@ -108,6 +114,9 @@ def main():
 | POST | `/api/rag/search` | 本地混合检索（场景隔离 + 关键词高亮） |
 | POST | `/api/rag/chunking` / `/api/rag/eval` | 切片对比 / 质量基线 |
 | POST | `/api/agent/run` | 执行三场景 + 问答 Agent 工作流 |
+| GET | `/api/orders` | 列出全部订单及实时状态 |
+| POST | `/api/order/query` | 按订单号查询订单 |
+| POST | `/api/order/update` | 实时更新订单状态（状态机校验 + 落盘） |
 | POST | `/api/ml/*` | 调优 / 合规 / 路由 / A/B / 幻觉 / 离线评测 |
 
 ---
@@ -438,7 +447,7 @@ def _run_search(query, scene, mode, top_k):
 
 ### 功能 4：Agent 工具调用 + DAG 编排（三场景具体实现）
 
-**作用**：三个业务 Agent 工作流，含真实订单库退款规则引擎、财报指标 + 合规熔断、分级审批链 + Saga 补偿、幂等保障。15 个工具（Function Calling 契约）。
+**作用**：三个业务 Agent 工作流，含真实订单库退款规则引擎、财报指标 + 合规熔断、分级审批链 + Saga 补偿、幂等保障。17 个工具（Function Calling 契约），并新增**订单状态实时管理**：通过订单号查询/更改订单状态（状态机校验 `paid→shipped→delivered→refunded/cancelled` + 时间戳联动 + 落盘 `orders_runtime.json`），对外提供 `GET /api/orders`、`POST /api/order/query`、`POST /api/order/update` 三个接口。
 
 ```python
 def build_office_agent():          # 企业办公：审批类型识别 + 分级审批链 + Saga
@@ -504,11 +513,14 @@ python server.py
 
 # 指定端口（线上部署由平台注入 $PORT）
 PORT=8080 python server.py
+
+# 可选：服务端密钥托管 + 自定义 JWT 密钥（生产推荐）
+DEEPSEEK_API_KEY=sk-xxx JWT_SECRET=your-secret python server.py
 ```
 
-打开浏览器访问 `http://127.0.0.1:8000`，进入工作台（8 个 tab：总览 / 智能助手 / **AI 智能检索** / **业务功能** / RAG 知识底座 / Agent 决策引擎 / 模型工程 / 企业治理）。
+打开浏览器访问 `http://127.0.0.1:8000`，**首次需登录**（默认账号见下方「企业级安全」章节），登录后进入工作台（8 个 tab：总览 / 智能助手 / **AI 智能检索** / **业务功能** / RAG 知识底座 / Agent 决策引擎 / 模型工程 / 企业治理）。
 
-**使用 AI 智能检索前**：在「AI 智能检索」页顶部填写 DeepSeek（或任意 OpenAI 兼容）API Key 并保存（Key 仅存本地浏览器），即可开始提问或上传文件检索。**业务功能**页会复用这份配置：已保存 Key 时三场景自动叠加 LLM 增强，未保存则纯本地向量库检索。
+**使用 AI 智能检索**：未配置服务端 `DEEPSEEK_API_KEY` 时，可在「AI 智能检索」页顶部填写 DeepSeek（或任意 OpenAI 兼容）API Key（Key 仅存本地浏览器）；配置了服务端 Key 则前端无需填，接口自动使用服务端密钥。
 
 ---
 
@@ -524,8 +536,35 @@ git diff                   # 查看改动
 
 ---
 
-## 七、API Key 安全说明
+## 七、企业级安全（JWT 登录 · RBAC · 限流 · 密钥托管 · 向量持久化）
 
-- API Key 由**前端表单填写**，保存到浏览器 `localStorage`（键 `ai_cfg`），**不写入服务器、不落盘、不进日志**。
-- 后端 `/api/llm/*` 接口仅在单次请求内存中持有 Key，用于拼接 `Authorization: Bearer` 转发到大模型服务，请求结束即释放。
-- 生产环境如需更强安全，建议改造为服务端密钥托管 + 用户级鉴权（OAuth/JWT），不在公网直连个人 Key。
+### 7.1 登录与 RBAC 权限
+
+所有业务接口统一走安全网关（限流 → 鉴权 → RBAC），未登录返回 `401`，越权返回 `403`，超频返回 `429`。默认三账号：
+
+| 账号 | 密码 | 角色 | 权限 |
+|------|------|------|------|
+| `admin` | `admin123` | 管理员 | 全部权限（含用户管理） |
+| `operator` | `operator123` | 运营 | 读写业务（改订单 / 上传 / 执行 Agent / 调 LLM） |
+| `viewer` | `viewer123` | 只读访客 | 仅只读查询 |
+
+- **JWT**：HS256 签名，纯 `hmac + hashlib + base64` 实现，密钥/过期时间由 `JWT_SECRET` / `JWT_EXPIRE` 控制。
+- **密码**：PBKDF2-SHA256 加盐 120000 次哈希，用户持久化到 `data/users.json`（不落明文）。
+- **RBAC 映射**：写接口（`/api/order/update`、`/api/rag/upload`、`/api/agent/run`、`/api/llm/*`）需 operator+；`/api/auth/users` 仅 admin。
+
+### 7.2 API 限流（滑动窗口，按 IP + 接口分级）
+
+| 分级 | 阈值 | 覆盖接口 |
+|------|------|---------|
+| 登录 | 5 次/分 | `/api/auth/login`（防暴力破解） |
+| 写操作 | 10 次/分 | 改订单 / 上传 / 执行 Agent |
+| LLM | 20 次/分 | `/api/llm/*`（控成本） |
+| 读接口 | 100 次/分 | 其余查询 |
+
+### 7.3 密钥托管
+
+API Key 解析优先级：**服务端 `DEEPSEEK_API_KEY` 环境变量 > 前端传入**。生产环境建议服务端托管，前端不再暴露个人 Key；未配置时回退前端填写（仍不落服务器、不落盘、不进日志）。
+
+### 7.4 向量/索引持久化
+
+用户上传的文档实时落盘到 `data/persisted_docs.json`，服务重启后自动重新加载并重建混合检索索引，**上传内容与检索能力不因重启丢失**。内置语料与业务数据本就存于 JSON，天然持久。

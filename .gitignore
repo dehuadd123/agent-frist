@@ -9,3 +9,6 @@ Thumbs.db
 
 # 运行时产物
 *.log
+data/orders_runtime.json
+data/users.json
+data/persisted_docs.json
