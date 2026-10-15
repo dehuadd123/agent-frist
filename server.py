@@ -65,11 +65,23 @@ import multiparse as _mp
 import business as _biz
 import auth as _auth
 
+from retrieval.vectorstore import VectorStore
+import acl as _acl
+import review as _review
+import taskqueue as _tq
+import function_call as _fc
+import contextvars
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATASET = os.path.join(_HERE, "data", "synth_dataset.json")
 SAMPLE_FILE = os.path.join(_HERE, "data", "sample_files.json")
 HTML = os.path.join(_HERE, "console.html")
 PERSISTED_DOCS = os.path.join(_HERE, "data", "persisted_docs.json")  # 上传文档持久化
+VECTOR_STORE_FILE = os.path.join(_HERE, "data", "vector_store.json")  # 真实向量索引持久化
+
+# 请求级上下文（当前登录用户 + 角色），供检索层做文档级 ACL 过滤
+_CURRENT_ACTOR = contextvars.ContextVar("actor", default="anonymous")
+_CURRENT_ROLE = contextvars.ContextVar("role", default="viewer")
 
 SCENES = {"ecommerce": "电商导购", "finance": "金融投研", "office": "企业办公"}
 SCENE_FEATURES = {
@@ -97,32 +109,75 @@ for _d in DOCS:
 
 RETRIEVER = HybridRetriever(CHUNKS)
 _DOC_BY_ID = {d["id"]: d for d in DOCS}
+VSTORE = VectorStore()
+VSTORE.load(VECTOR_STORE_FILE)  # 恢复上次向量索引，配合 manifest 实现跨重启增量索引
 _BOOTING = True  # 启动加载阶段标志：期间 _persist_docs 不写盘，避免覆盖持久化文档
 
 
-def _add_document(doc):
-    """把一篇文档解析切片后追加进检索索引，并重建混合检索器。
+def _get_acl(doc):
+    """返回文档 ACL：upload_ 文档默认 owner 私有（owner/admin/operator 可见），其余 public。"""
+    if "acl" in doc:
+        return doc["acl"]
+    if doc["id"].startswith("upload_"):
+        return _acl.make_acl(owner=doc.get("owner", ""), public=False, roles=["admin", "operator"])
+    return _acl.make_acl(public=True)
 
-    用户上传的文档（id 以 upload_ 开头）会实时落盘到 persisted_docs.json，
-    服务重启后自动重新加载，实现「向量/索引持久化」——文档与检索能力不因重启丢失。
+
+def _visible_doc_ids(scene, actor, role):
+    """返回 (actor, role) 在指定 scene 下可见的 doc_id 集合（ACL + 场景双重过滤）。"""
+    ids = set()
+    for d in DOCS:
+        if scene not in ("", "all", None) and d.get("scene") != scene:
+            continue
+        if _acl.can_access(_get_acl(d), actor, role):
+            ids.add(d["id"])
+    return ids
+
+
+# 把内置语料也纳入真实向量库（增量：manifest 已存在且 hash 未变则跳过）
+for _d in DOCS:
+    _cs = chunk_structure(_d["content"])
+    VSTORE.add_document(_d["id"], _d.get("title", _d["id"]), _cs,
+                        {"title": _d.get("title", _d["id"]), "scene": _d.get("scene", ""),
+                         "acl": _get_acl(_d), "owner": _d.get("owner", "")})
+
+
+def _add_document(doc):
+    """把一篇文档解析切片后写入检索索引 + 增量写入真实向量库（支持 upsert + 变更检测）。
+
+    - 首次：追加切片到 CHUNKS/CHUNK_META，VectorStore.add_document 做嵌入。
+    - 同 doc_id 重复（内容变更）：先移除旧切片，再重新加入，只重索引该文档。
+    用户上传的文档（id 以 upload_ 开头）实时落盘 persisted_docs.json，
+    向量索引经「变更检测 + 增量索引」写入 vector_store.json，重启自动恢复。
     """
     global RETRIEVER
+    doc_id = doc["id"]
+    if doc_id in _DOC_BY_ID:
+        # upsert：移除旧切片（仅清理 CHUNKS/CHUNK_META；向量库由 add_document 内部做变更检测）
+        keep = [(c, m) for c, m in zip(CHUNKS, CHUNK_META) if m != doc_id]
+        CHUNKS[:] = [c for c, _ in keep]
+        CHUNK_META[:] = [m for _, m in keep]
+        DOCS[:] = [d for d in DOCS if d["id"] != doc_id]
     DOCS.append(doc)
     new_chunks = chunk_structure(doc["content"])
     if not new_chunks:
         return 0
     CHUNKS.extend(new_chunks)
-    CHUNK_META.extend([doc["id"]] * len(new_chunks))
-    _DOC_BY_ID[doc["id"]] = doc
+    CHUNK_META.extend([doc_id] * len(new_chunks))
+    _DOC_BY_ID[doc_id] = doc
     RETRIEVER = HybridRetriever(CHUNKS)
+    # 真实向量库：增量索引（content hash 变更检测，未变跳过，变更只重索引该文档）
+    meta = {"title": doc.get("title", doc_id), "scene": doc.get("scene", ""),
+            "acl": _get_acl(doc), "owner": doc.get("owner", "")}
+    VSTORE.add_document(doc_id, meta["title"], new_chunks, meta)
     _persist_docs()
     return len(new_chunks)
 
 
 def _persist_docs():
-    """把用户上传的运行时文档落盘（内置语料/业务数据本就在 JSON 中，无需重复持久化）。
+    """把用户上传的运行时文档 + 向量索引落盘（内置语料/业务数据本就在 JSON 中）。
 
-    启动加载阶段（_BOOTING）跳过写盘，避免覆盖磁盘上已有的持久化文档。
+    启动加载阶段（_BOOTING）跳过写盘，避免覆盖磁盘上已有的持久化数据。
     """
     if _BOOTING:
         return
@@ -130,6 +185,10 @@ def _persist_docs():
     try:
         with open(PERSISTED_DOCS, "w", encoding="utf-8") as f:
             json.dump(runtime, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    try:
+        VSTORE.save(VECTOR_STORE_FILE)  # 向量索引持久化
     except OSError:
         pass
 
@@ -162,20 +221,36 @@ def _guess_scene(text):
 
 
 def _rag_search(query, scene, top_k=4):
-    """RAG 混合检索（场景隔离），返回 [{text,title,scene,score}]。"""
-    allowed_idx = [i for i, doc_id in enumerate(CHUNK_META)
-                   if scene in ("", "all", None) or _DOC_BY_ID[doc_id]["scene"] == scene]
+    """RAG 混合检索（真实向量库 + BM25 + RRF，带文档级 ACL 与场景隔离）。
+
+    返回 [{text,title,scene,score}]。dense 走 VectorStore（余弦），sparse 走 BM25，
+    RRF 在 doc_id 粒度融合后映射回该文档最相关的切片。
+    """
+    actor = _CURRENT_ACTOR.get()
+    role = _CURRENT_ROLE.get()
+    visible = _visible_doc_ids(scene, actor, role)
+    if not visible:
+        return []
+    dense = VSTORE.search(query, k=50, filter_fn=lambda rec: rec["doc_id"] in visible)
+    dense_rank = [(r["doc_id"], r["score"]) for r in dense]
     bm = RETRIEVER._bm25_rank(query, limit=50)
-    de = RETRIEVER._dense_rank(query, limit=50)
-    fused = rrf_fuse([[(i, s) for i, s in bm if i in allowed_idx],
-                      [(i, s) for i, s in de if i in allowed_idx]])
-    hits = []
-    for i, score in fused[:top_k]:
-        doc = _DOC_BY_ID[CHUNK_META[i]]
+    sparse_rank = [(CHUNK_META[i], s) for i, s in bm if CHUNK_META[i] in visible]
+    fused = rrf_fuse([dense_rank, sparse_rank])
+    seen, hits = set(), []
+    for doc_id, _ in fused:
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        rec = next((r for r in dense if r["doc_id"] == doc_id), None)
+        if rec is None:
+            continue
+        meta = rec["meta"]
         hits.append({
-            "text": CHUNKS[i], "title": doc["title"],
-            "scene": doc["scene"], "score": round(float(score), 4),
+            "text": rec["text"], "title": meta.get("title", ""),
+            "scene": meta.get("scene", ""), "score": round(float(rec["score"]), 4),
         })
+        if len(hits) >= top_k:
+            break
     return hits
 
 
@@ -289,6 +364,7 @@ _preload_samples()
 # 启动时恢复上次上传的文档（向量/索引持久化）
 _PERSISTED_LOADED = _load_persisted_docs()
 _BOOTING = False  # 启动完成，之后上传文档正常落盘
+VSTORE.save(VECTOR_STORE_FILE)  # 启动完成后落盘向量索引（增量/变更检测结果）
 if _PERSISTED_LOADED:
     audit("system", "恢复持久化文档", f"重新加载 {_PERSISTED_LOADED} 篇上传文档")
 
@@ -341,8 +417,30 @@ def _run_eval():
 
 
 def _run_search(query, scene, mode, top_k):
-    allowed_idx = [i for i, doc_id in enumerate(CHUNK_META)
-                   if scene in ("", "all", None) or _DOC_BY_ID[doc_id]["scene"] == scene]
+    actor = _CURRENT_ACTOR.get()
+    role = _CURRENT_ROLE.get()
+    visible = _visible_doc_ids(scene, actor, role)
+    allowed_idx = [i for i, doc_id in enumerate(CHUNK_META) if doc_id in visible]
+
+    if mode == "dense":
+        # 真实向量库路径：余弦检索 + ACL 过滤
+        records = VSTORE.search(query, k=top_k, filter_fn=lambda rec: rec["doc_id"] in visible)
+        hits = []
+        for r in records:
+            meta = r["meta"]
+            hits.append({
+                "chunk_id": r["id"], "doc_id": r["doc_id"],
+                "title": meta.get("title", ""), "scene": meta.get("scene", ""),
+                "scene_name": SCENES.get(meta.get("scene", ""), meta.get("scene", "")),
+                "score": round(float(r["score"]), 4), "text": r["text"],
+                "highlighted": _highlight(r["text"], query),
+            })
+        return {
+            "query": query, "scene": scene or "all", "mode": mode, "top_k": top_k,
+            "hits": hits, "total_corpus_chunks": len(CHUNKS),
+            "filtered_chunks": len(allowed_idx), "backend": "vectorstore",
+        }
+
     if mode == "hybrid":
         bm = RETRIEVER._bm25_rank(query, limit=50)
         de = RETRIEVER._dense_rank(query, limit=50)
@@ -364,7 +462,7 @@ def _run_search(query, scene, mode, top_k):
     return {
         "query": query, "scene": scene or "all", "mode": mode, "top_k": top_k,
         "hits": hits, "total_corpus_chunks": len(CHUNKS),
-        "filtered_chunks": len(allowed_idx),
+        "filtered_chunks": len(allowed_idx), "backend": "hybrid",
     }
 
 
@@ -373,6 +471,10 @@ def _run_doc_preview(doc_id, query):
     doc = _DOC_BY_ID.get(doc_id)
     if not doc:
         return None
+    actor = _CURRENT_ACTOR.get()
+    role = _CURRENT_ROLE.get()
+    if not _acl.can_access(_get_acl(doc), actor, role):
+        return None  # 无文档访问权限，等同不存在
     idxs = [i for i, d in enumerate(CHUNK_META) if d == doc_id]
     positions = []
     if query:
@@ -415,10 +517,14 @@ def _resolve_api_key(req):
     return (req.get("api_key") or "").strip() or SERVER_API_KEY
 
 
-def _llm_chat(api_key, base_url, model, messages, temperature=0.3, max_tokens=None):
-    """调用 OpenAI 兼容 chat/completions 接口，返回 (content, err)。API Key 由前端传入，不落盘。"""
+def _llm_chat(api_key, base_url, model, messages, temperature=0.3, max_tokens=None, tools=None):
+    """调用 OpenAI 兼容 chat/completions 接口，返回 (content, err, tool_calls)。
+
+    支持 tools 参数（真实 Function Calling）：模型返回 tool_calls 时原样透出，
+    由 function_call.run_agent_loop 负责执行并回填。API Key 由前端传入，不落盘。
+    """
     if not api_key:
-        return None, "未配置 API Key，请先在「API 配置」面板填写"
+        return None, "未配置 API Key，请先在「API 配置」面板填写", []
     base = (base_url or DEFAULT_LLM_BASE).strip().rstrip("/")
     url = base + "/chat/completions"
     payload = {
@@ -429,6 +535,9 @@ def _llm_chat(api_key, base_url, model, messages, temperature=0.3, max_tokens=No
     }
     if max_tokens:
         payload["max_tokens"] = max_tokens
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     headers = {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + api_key.strip(),
@@ -443,14 +552,16 @@ def _llm_chat(api_key, base_url, model, messages, temperature=0.3, max_tokens=No
             msg = detail.get("error", {}).get("message", "") if isinstance(detail.get("error"), dict) else str(detail)
         except Exception:
             msg = ""
-        return None, "API 调用失败 HTTP %s：%s" % (e.code, msg or e.reason)
+        return None, "API 调用失败 HTTP %s：%s" % (e.code, msg or e.reason), []
     except Exception as e:
-        return None, "网络错误：%s" % e
+        return None, "网络错误：%s" % e, []
     try:
-        content = data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content")
+        tool_calls = msg.get("tool_calls") or []
     except (KeyError, IndexError, TypeError):
-        return None, "API 返回结构异常：%s" % json.dumps(data, ensure_ascii=False)[:200]
-    return content, None
+        return None, "API 返回结构异常：%s" % json.dumps(data, ensure_ascii=False)[:200], []
+    return content, None, tool_calls
 
 
 def _llm_retrieve(api_key, base_url, model, query, context=None, scene=None):
@@ -467,7 +578,7 @@ def _llm_retrieve(api_key, base_url, model, query, context=None, scene=None):
     user_parts.append("问题：" + query)
     messages = [{"role": "system", "content": sys_prompt},
                 {"role": "user", "content": "\n\n".join(user_parts)}]
-    answer, err = _llm_chat(api_key, base_url, model, messages)
+    answer, err, _ = _llm_chat(api_key, base_url, model, messages)
     return {"ok": err is None, "answer": answer or "", "error": err,
             "scene": scene or _guess_scene(query), "has_context": bool(context)}
 
@@ -485,7 +596,8 @@ def _make_llm(req):
     model = req.get("model", DEFAULT_LLM_MODEL)
 
     def _call(messages):
-        return _llm_chat(api_key, base_url, model, messages)
+        content, err, _ = _llm_chat(api_key, base_url, model, messages)
+        return content, err
 
     return _call
 
@@ -518,6 +630,9 @@ class Handler(BaseHTTPRequestHandler):
         p = parsed.path
         ip = self.client_address[0]
         self._actor = "anonymous"
+        # 每次请求先重置请求级上下文，避免串到上一个请求的登录态
+        _CURRENT_ACTOR.set("anonymous")
+        _CURRENT_ROLE.set("viewer")
 
         # 1) 限流（按 IP + 接口分级）
         ok, limit = _auth.check_rate(ip, p)
@@ -538,6 +653,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         self._actor = payload.get("sub", "user")
         self._role = payload.get("role", "viewer")
+        _CURRENT_ACTOR.set(self._actor)
+        _CURRENT_ROLE.set(self._role)
         if _auth.ROLE_LEVEL.get(self._role, 0) < level:
             self._json({"error": "权限不足", "code": "forbidden",
                         "required_role": level}, 403)
@@ -633,6 +750,44 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif p == "/api/ml/observability":
             self._json({"ok": True, **_ml.OBS.dashboard()})
+        elif p == "/api/vector/stats":
+            self._json({"ok": True, "vectorstore": VSTORE.stats(),
+                        "backend": "flat-cosine", "persisted": VECTOR_STORE_FILE})
+        elif p == "/api/acl/docs":
+            actor = _CURRENT_ACTOR.get()
+            role = _CURRENT_ROLE.get()
+            rows = []
+            for d in DOCS:
+                acl = _get_acl(d)
+                rows.append({
+                    "doc_id": d["id"], "title": d["title"], "scene": d["scene"],
+                    "owner": acl.get("owner", ""),
+                    "public": acl.get("public", False),
+                    "roles": acl.get("roles", []),
+                    "accessible": _acl.can_access(acl, actor, role),
+                    "chunks": sum(1 for i in CHUNK_META if i == d["id"]),
+                })
+            self._json({"ok": True, "actor": actor, "role": role, "docs": rows})
+        elif p == "/api/review/stats":
+            self._json({"ok": True, **_review.QUEUE.stats()})
+        elif p == "/api/review/queue":
+            qs = parse_qs(parsed.query)
+            status = (qs.get("status") or [""])[0].strip() or None
+            self._json({"ok": True, "status": status or "all",
+                        "items": _review.QUEUE.list(status)})
+        elif p == "/api/tasks/stats":
+            self._json({"ok": True, **_tq.QUEUE.stats()})
+        elif p == "/api/tasks":
+            qs = parse_qs(parsed.query)
+            status = (qs.get("status") or [""])[0].strip() or None
+            self._json({"ok": True, "tasks": _tq.QUEUE.list(status)})
+        elif p.startswith("/api/tasks/"):
+            task_id = p[len("/api/tasks/"):].strip()
+            t = _tq.QUEUE.get(task_id)
+            if not t:
+                self._json({"error": "任务不存在"}, 404)
+            else:
+                self._json({"ok": True, **t})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -721,20 +876,50 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if scene in ("", "auto", "all", None):
                 scene = _guess_scene(text)
-            doc_id = "upload_" + uuid.uuid4().hex[:8]
-            doc = {"id": doc_id, "title": filename or doc_id, "scene": scene,
-                   "format": parsed["ext"].lstrip("."), "content": text}
-            n = _add_document(doc)
-            keywords = _extract_keywords(text)
-            audit(self._actor, "上传文档", f"{filename} [{parsed['format']}] @{scene} -> {n} 切片")
-            self._json({"ok": True, "doc_id": doc_id, "filename": filename,
+            owner = self._actor if self._actor != "anonymous" else "admin"
+            # 支持 upsert：传 doc_id 则对同文档做变更检测（内容变才重索引），否则新建
+            doc_id = (req.get("doc_id") or "").strip()
+            if not (doc_id.startswith("upload_") and doc_id in _DOC_BY_ID):
+                doc_id = "upload_" + uuid.uuid4().hex[:8]
+            doc = {"id": doc_id, "title": filename or doc_id,
+                   "scene": scene, "format": parsed["ext"].lstrip("."),
+                   "content": text, "owner": owner,
+                   "acl": _acl.make_acl(owner=owner, public=False, roles=["admin", "operator"])}
+
+            def _do_index(doc, text, filename, parsed, scene):
+                n = _add_document(doc)
+                keywords = _extract_keywords(text)
+                return {"ok": True, "doc_id": doc["id"], "filename": filename,
                         "format": parsed["format"], "note": parsed["note"],
                         "scene": scene, "chunks_added": n,
-                        "total_chunks": len(CHUNKS),
-                        "keywords": keywords,
+                        "total_chunks": len(CHUNKS), "keywords": keywords,
                         "highlighted_preview": _highlight(text[:400], keywords),
-                        "preview": text[:200]})
+                        "preview": text[:200]}
+
+            if req.get("async"):
+                # 异步任务队列：索引在后台 worker 执行，立即返回 task_id
+                t = _tq.QUEUE.submit("文档索引:%s" % (filename or doc["id"]),
+                                      _do_index, doc, text, filename, parsed, scene)
+                audit(self._actor, "上传文档(异步)", f"{filename} -> {t['task_id']}")
+                self._json({"ok": True, "async": True, "task_id": t["task_id"],
+                            "doc_id": doc["id"]})
+                return
+            audit(self._actor, "上传文档", f"{filename} [{parsed['format']}] @{scene}")
+            self._json(_do_index(doc, text, filename, parsed, scene))
         elif p == "/api/agent/run":
+            if req.get("async"):
+                scenario = req.get("scenario", "")
+                params = req.get("params", {}) or {}
+                actor = self._actor
+
+                def _do_run():
+                    return self._run_agent_sync(scenario, params, actor)
+
+                t = _tq.QUEUE.submit("Agent执行:%s" % scenario, _do_run)
+                audit(self._actor, "Agent执行(异步)", f"{scenario} -> {t['task_id']}")
+                self._json({"ok": True, "async": True, "task_id": t["task_id"],
+                            "scenario": scenario})
+                return
             self._handle_agent_run(req)
         elif p == "/api/order/update":
             order_id = (req.get("order_id") or "").strip()
@@ -803,9 +988,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(messages, list) or not messages:
                 self._json({"error": "messages 不能为空"}, 400)
                 return
-            content, err = _llm_chat(api_key, base_url, model, messages,
-                                     temperature=req.get("temperature", 0.3),
-                                     max_tokens=req.get("max_tokens"))
+            content, err, _ = _llm_chat(api_key, base_url, model, messages,
+                                         temperature=req.get("temperature", 0.3),
+                                         max_tokens=req.get("max_tokens"))
             self._json({"ok": err is None, "content": content or "", "error": err})
         elif p == "/api/ml/tuning":
             r = _ml.run_ecommerce_tuning()
@@ -855,6 +1040,26 @@ class Handler(BaseHTTPRequestHandler):
             audit(self._actor, "办公助手", f"{query} · top{top_k}")
             r = _biz.office_assistant(query, top_k=top_k, llm=_make_llm(req))
             self._json({"ok": True, **r})
+        elif p == "/api/review/approve" or p == "/api/review/reject":
+            review_id = (req.get("review_id") or "").strip()
+            comment = (req.get("comment") or "").strip()
+            action = "approve" if p.endswith("approve") else "reject"
+            t = _review.QUEUE.verdict(review_id, action, self._actor, comment)
+            if not t:
+                self._json({"error": "审核任务不存在或已裁决"}, 404)
+                return
+            audit(self._actor, "人工审核", f"{review_id} -> {t['status']} · {comment[:40]}")
+            self._json({"ok": True, **t})
+        elif p == "/api/tasks/cancel":
+            task_id = (req.get("task_id") or "").strip()
+            t = _tq.QUEUE.cancel(task_id)
+            if not t:
+                self._json({"error": "任务不存在"}, 404)
+                return
+            audit(self._actor, "取消任务", task_id)
+            self._json({"ok": True, **t})
+        elif p == "/api/llm/agent":
+            self._handle_llm_agent(req)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -888,10 +1093,56 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "username": username, "role": role,
                     "role_name": _auth.ROLE_NAMES.get(role)})
 
+    # ---------- 真实 LLM Function Calling 闭环 ----------
+    def _handle_llm_agent(self, req):
+        query = (req.get("query") or "").strip()
+        if not query:
+            self._json({"error": "query 不能为空"}, 400)
+            return
+        api_key = _resolve_api_key(req)
+        base_url = req.get("base_url", DEFAULT_LLM_BASE)
+        model = req.get("model", DEFAULT_LLM_MODEL)
+        scene_hint = req.get("scene", "") or _guess_scene(query)
+
+        # 无 API Key：降级到确定性 DAG Agent（本地向量库），保证可用
+        if not api_key:
+            r, _ = self._run_qa({"query": query, "scene": scene_hint})
+            self._json({"ok": True, "mode": "deterministic", "degraded": True,
+                        "answer": r["answer"], "sources": r["sources"],
+                        "hint": "未配置 API Key，已降级为确定性 Agent"})
+            return
+
+        # 写工具网关：写操作不直接执行，转人工审核（HITL）
+        def _guard(name, arguments):
+            tool = _tools.REGISTRY.get(name)
+            if tool.side_effect == "write":
+                t = _review.QUEUE.create(
+                    "tool_write", "工具写操作复核：%s" % name,
+                    {"tool": name, "arguments": arguments}, actor=self._actor)
+                return False, "写操作已提交人工审核（%s），审核通过后再执行" % t["review_id"]
+            return True, ""
+
+        tools = _tools.REGISTRY.to_openai_tools()
+        executor = _fc.build_tool_executor(_tools.REGISTRY, guard=_guard)
+        messages = [{"role": "system", "content": _fc.build_system_prompt(scene_hint)},
+                    {"role": "user", "content": query}]
+
+        def chat_fn(msgs, tools_decl=None):
+            content, err, tool_calls = _llm_chat(api_key, base_url, model, msgs,
+                                                 temperature=0.2, tools=tools_decl)
+            return {"content": content, "tool_calls": tool_calls, "error": err}
+
+        res = _fc.run_agent_loop(chat_fn, messages, tools, executor)
+        audit(self._actor, "FunctionCalling", query[:60])
+        self._json({"ok": True, "mode": "function_calling", "scene": scene_hint, **res})
+
     # ---------- Agent 执行 ----------
-    def _handle_agent_run(self, req):
-        scenario = req.get("scenario", "")
-        params = req.get("params", {}) or {}
+    def _run_agent_sync(self, scenario, params, actor):
+        """执行 Agent 工作流并返回结构化结果（供同步接口与异步任务队列复用）。"""
+        self._actor = actor
+        _CURRENT_ACTOR.set(actor)
+        _CURRENT_ROLE.set(self._role if getattr(self, "_role", None) else "viewer")
+        params = params or {}
         buf = io.StringIO()
         result = None
         breaker_state = None
@@ -908,8 +1159,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif scenario == "qa":
                     result, breaker_state = self._run_qa(params)
                 else:
-                    self._json({"error": "未知场景: %s" % scenario}, 400)
-                    return
+                    raise ValueError("未知场景: %s" % scenario)
             logs = buf.getvalue().splitlines()
             latency = (time.time() - t0) * 1000
             _ml.OBS.add_span(trace, "意图识别", latency * 0.08)
@@ -919,21 +1169,24 @@ class Handler(BaseHTTPRequestHandler):
             if any("合规红线" in l for l in logs):
                 _ml.OBS.record_metric("compliance_violation", 1)
             _ml.OBS.finish_trace(trace, latency, tokens=len(logs) * 40, status="ok")
-            audit(self._actor, "Agent执行", f"{scenario} -> {json.dumps(params, ensure_ascii=False)[:80]}")
-            self._json({
-                "ok": True, "scenario": scenario, "logs": logs,
-                "result": result, "breaker": breaker_state,
-            })
+            audit(actor, "Agent执行", f"{scenario} -> {json.dumps(params, ensure_ascii=False)[:80]}")
+            return {"ok": True, "scenario": scenario, "logs": logs,
+                    "result": result, "breaker": breaker_state}
         except Exception as e:
             logs = buf.getvalue().splitlines()
             latency = (time.time() - t0) * 1000
             _ml.OBS.record_metric("error", 1)
             _ml.OBS.finish_trace(trace, latency, status="error")
-            audit(self._actor, "Agent执行", f"{scenario}", result="error")
-            self._json({
-                "ok": False, "scenario": scenario, "logs": logs,
-                "error": str(e), "breaker": breaker_state,
-            }, 500)
+            audit(actor, "Agent执行", f"{scenario}", result="error")
+            return {"ok": False, "scenario": scenario, "logs": logs,
+                    "error": str(e), "breaker": breaker_state}
+
+    def _handle_agent_run(self, req):
+        scenario = req.get("scenario", "")
+        params = req.get("params", {}) or {}
+        r = self._run_agent_sync(scenario, params, self._actor)
+        code = 200 if r["ok"] else 500
+        self._json(r, code)
 
     def _run_ecommerce(self, p):
         order_id = p.get("order_id", "O1001")
@@ -946,6 +1199,15 @@ class Handler(BaseHTTPRequestHandler):
         AGENT_ECOMMERCE.run(ctx, idempotency_key=idem_key)
         order = ctx.get("order", {})
         policy = ctx.get("policy", {})
+        review_id = None
+        if policy.get("decision") == "manual":
+            # HITL：需人工复核的退款自动进入审核队列
+            t = _review.QUEUE.create(
+                "refund", "退款人工复核：%s" % order_id,
+                {"order_id": order_id, "request_id": request_id,
+                 "amount": order.get("amount"), "message": ctx.get("message", "")},
+                actor=self._actor)
+            review_id = t["review_id"]
         return {
             "order_id": order_id, "request_id": request_id,
             "idempotency_key": idem_key,
@@ -954,6 +1216,7 @@ class Handler(BaseHTTPRequestHandler):
             "decision": policy.get("decision"),
             "message": ctx.get("message", ""),
             "result": ctx.get("result"),
+            "review_id": review_id,
         }
 
     def _run_finance(self, p):
@@ -962,6 +1225,14 @@ class Handler(BaseHTTPRequestHandler):
         AGENT_FINANCE.run(ctx)
         b = AGENT_FINANCE.breaker
         analysis = ctx.get("analysis", {})
+        review_id = None
+        if ctx.get("rejected"):
+            # HITL：命中合规红线的输出进入审核队列
+            t = _review.QUEUE.create(
+                "compliance", "合规拦截复核：%s" % query[:40],
+                {"query": query, "violations": [v.get("name") for v in ctx.get("violations", [])]},
+                actor=self._actor)
+            review_id = t["review_id"]
         return {
             "query": query, "answer": ctx.get("answer", ""),
             "evidence": ctx.get("evidence", ""),
@@ -971,6 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
             "trend": analysis.get("trend", []),
             "rejected": ctx.get("rejected", False),
             "violations": [v.get("name") for v in ctx.get("violations", [])],
+            "review_id": review_id,
         }, {
             "state": b.state, "failures": b.failures,
             "threshold": b.failure_threshold, "recovery_timeout": b.recovery_timeout,
@@ -1083,7 +1355,10 @@ def main():
     print("企业级 LLM 智能应用平台已启动: http://0.0.0.0:%d" % port)
     print("知识底座：%d 篇文档 -> %d 切片，黄金 QA %d 条；工具 %d 个"
           % (len(DOCS), len(CHUNKS), len(QA_PAIRS), len(_tools.REGISTRY._tools)))
-    print("安全网关：JWT 鉴权 + RBAC 三角色 + 接口分级限流 已启用")
+    print("真实向量库：%d 向量（dim=%d，扁平余弦索引，持久化 %s）"
+          % (len(VSTORE.records), VSTORE.dim, os.path.basename(VECTOR_STORE_FILE)))
+    print("安全网关：JWT 鉴权 + RBAC 三角色 + 文档级 ACL + 接口分级限流 已启用")
+    print("企业治理：Function Calling 闭环 / HITL 人工审核 / 异步任务队列 已启用")
     print("密钥托管：%s" % ("服务端 DEEPSEEK_API_KEY" if SERVER_API_KEY else "前端传入（未设 DEEPSEEK_API_KEY）"))
     print("向量持久化：本次恢复 %d 篇上传文档" % _PERSISTED_LOADED)
     server.serve_forever()

@@ -214,6 +214,7 @@ details[open] summary{border-bottom:1px solid var(--border2)}
     <a data-tab="agents">Agent 决策引擎</a>
     <a data-tab="ml">模型工程</a>
     <a data-tab="governance">企业治理</a>
+    <a data-tab="platform">企业级平台</a>
   </div>
   <div class="status-pill"><span class="sdot" id="sdot"></span><span id="sstat">连接中…</span></div>
   <div class="userbox" id="userbox" style="display:none">
@@ -640,6 +641,42 @@ details[open] summary{border-bottom:1px solid var(--border2)}
   </div>
 </section>
 
+<!-- ============ 企业级平台（六项能力） ============ -->
+<section class="tab" id="tab-platform">
+  <div class="hero"><h1>企业级平台能力</h1>
+  <p>真实向量库 · 文档级 ACL · 增量索引 · Function Calling 闭环 · HITL 人工审核 · 异步任务队列。</p></div>
+
+  <div class="card"><h3>🧬 真实向量库 + 持久化 / 增量索引 + 变更检测</h3>
+    <div class="btn-row"><button class="btn sec" id="vectorRefresh">刷新向量库状态</button></div>
+    <div id="vectorStat" style="margin-top:12px"><div class="empty">点击刷新查看向量索引</div></div>
+  </div>
+
+  <div class="card"><h3>🔐 文档级 ACL 权限隔离</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:8px">当前登录用户仅能检索到 <b>public</b> 文档、<b>自己上传</b> 的文档，以及角色白名单内的文档。</p>
+    <div class="btn-row"><button class="btn sec" id="aclRefresh">刷新文档权限</button></div>
+    <div id="aclList" style="margin-top:12px"><div class="empty">点击刷新查看文档 ACL</div></div>
+  </div>
+
+  <div class="card"><h3>🛠 真实 LLM Function Calling 闭环</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin-bottom:8px">配置 API Key 后，LLM 自主决定调用哪些工具（query_order / search_reports / list_orders…），写操作自动转人工审核。无 Key 时降级为确定性 Agent。</p>
+    <div class="field"><label>自然语言指令</label>
+      <textarea id="fcQuery" rows="2" placeholder="例如：帮我查订单 O1001 的状态，并判断能否退款"></textarea></div>
+    <div class="btn-row"><button class="btn" id="fcRun">运行</button></div>
+    <div id="fcResult" style="margin-top:12px"><div class="empty">等待运行…</div></div>
+  </div>
+
+  <div class="qa-grid">
+    <div class="card"><h3>👤 人工审核 HITL</h3>
+      <div class="btn-row"><button class="btn sec" id="reviewRefresh">刷新审核队列</button></div>
+      <div id="reviewList" style="margin-top:12px"><div class="empty">暂无待审核任务</div></div>
+    </div>
+    <div class="card"><h3>⏱ 异步任务队列</h3>
+      <div class="btn-row"><button class="btn sec" id="taskRefresh">刷新任务队列</button></div>
+      <div id="taskList" style="margin-top:12px"><div class="empty">暂无任务</div></div>
+    </div>
+  </div>
+</section>
+
 </div>
 
 <script>
@@ -647,6 +684,7 @@ const $=s=>document.querySelector(s);
 function setTab(t){
   document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active',a.dataset.tab===t));
   document.querySelectorAll('section.tab').forEach(s=>s.classList.toggle('active',s.id==='tab-'+t));
+  if(t==='platform')loadPlatform();
 }
 document.querySelectorAll('.nav a').forEach(a=>a.onclick=()=>setTab(a.dataset.tab));
 
@@ -1326,6 +1364,81 @@ $('#bizOfcRun').onclick=async()=>{
   $('#bizOfcRun').disabled=false;
   renderBizOffice($('#bizOfcResult'),d);
 };
+
+// ===== 企业级平台：六项能力 =====
+async function loadVector(){
+  try{
+    const d=await get('/api/vector/stats');
+    const vs=d.vectorstore||{};
+    const manifest=vs.manifest||{};
+    const rows=Object.entries(manifest).map(([id,m])=>
+      '<tr><td>'+id+'</td><td class="num">'+m.chunk_count+'</td><td>'+new Date((m.updated_at||0)*1000).toLocaleTimeString()+'</td></tr>').join('');
+    $('#vectorStat').innerHTML=
+      '<div class="ritem"><b>后端</b>'+(d.backend||'')+' · 余弦检索</div>'+
+      '<div class="ritem"><b>文档 / 切片 / 维度</b>'+vs.chunks+' 向量 · '+vs.dim+' 维 · 持久化 '+vs.docs+' 篇</div>'+
+      (rows?'<table><tr><th>文档</th><th>切片</th><th>最近索引</th></tr>'+rows+'</table>':'<div class="empty">无 manifest</div>');
+  }catch(e){$('#vectorStat').innerHTML='<div class="empty">加载失败</div>';}
+}
+async function loadAcl(){
+  try{
+    const d=await get('/api/acl/docs');
+    const rows=d.docs.map(x=>{
+      const tag=x.public?'<span class="chip c-green">public</span>':('<span class="chip c-orange">私有</span>');
+      const acc=x.accessible?'<span class="chip c-green">可见</span>':'<span class="chip c-red">不可见</span>';
+      return '<tr><td>'+x.doc_id+'</td><td>'+x.title+'</td><td>'+tag+'</td><td>'+x.owner+'</td><td class="num">'+x.chunks+'</td><td>'+acc+'</td></tr>';
+    }).join('');
+    $('#aclList').innerHTML='<table><tr><th>文档</th><th>标题</th><th>ACL</th><th>owner</th><th>切片</th><th>当前角色</th></tr>'+rows+'</table>';
+  }catch(e){$('#aclList').innerHTML='<div class="empty">加载失败</div>';}
+}
+$('#fcRun').onclick=async()=>{
+  const query=$('#fcQuery').value.trim();if(!query)return;
+  $('#fcRun').disabled=true;$('#fcResult').innerHTML='<div class="empty">执行中…</div>';
+  try{
+    const d=await post('/api/llm/agent',{query,...fcLlm()});
+    let html='<div class="ritem"><b>模式</b><span class="chip '+(d.mode==='function_calling'?'c-blue':'c-cyan')+'">'+(d.mode==='function_calling'?'真实 Function Calling':'确定性降级')+'</span></div>';
+    if(d.tool_trace&&d.tool_trace.length)html+='<div class="ritem"><b>工具调用链</b>'+d.tool_trace.map(t=>'<div class="chip c-purple">'+t.name+'</div>').join(' ')+'</div>';
+    if(d.answer)html+='<div class="rans">'+d.answer+'</div>';
+    if(d.error)html+='<div class="ritem" style="color:var(--red)">'+d.error+'</div>';
+    $('#fcResult').innerHTML=html;
+  }catch(e){$('#fcResult').innerHTML='<div class="empty">执行失败</div>';}
+  $('#fcRun').disabled=false;
+};
+function fcLlm(){
+  const c=aiCfg();
+  return {api_key:c.key||'',base_url:c.base||'',model:c.model||''};
+}
+async function loadReviews(){
+  try{
+    const d=await get('/api/review/queue');
+    const items=d.items||[];
+    if(!items.length){$('#reviewList').innerHTML='<div class="empty">暂无待审核任务</div>';return;}
+    $('#reviewList').innerHTML=items.map(t=>{
+      const st={pending:['待审核','c-orange'],approved:['已通过','c-green'],rejected:['已驳回','c-red']}[t.status]||[t.status,'c-purple'];
+      const btn=t.status==='pending'?'<button class="btn sec" onclick="reviewVerdict(\''+t.review_id+'\',\'approve\')">通过</button> <button class="btn sec" onclick="reviewVerdict(\''+t.review_id+'\',\'reject\')">驳回</button>':'';
+      return '<div class="ritem"><b>'+t.title+'</b><span class="chip '+st[1]+'">'+st[0]+'</span><div style="margin-top:6px">'+t.review_id+' · '+t.kind+' · '+t.actor+btn+'</div></div>';
+    }).join('');
+  }catch(e){$('#reviewList').innerHTML='<div class="empty">加载失败</div>';}
+}
+async function reviewVerdict(id,action){
+  await post('/api/review/'+action,{review_id:id,comment:''});
+  loadReviews();
+}
+async function loadTasks(){
+  try{
+    const d=await get('/api/tasks');
+    const items=d.tasks||[];
+    if(!items.length){$('#taskList').innerHTML='<div class="empty">暂无任务</div>';return;}
+    $('#taskList').innerHTML=items.map(t=>{
+      const st={pending:['排队中','c-orange'],running:['执行中','c-blue'],done:['已完成','c-green'],failed:['失败','c-red']}[t.status]||[t.status,'c-purple'];
+      return '<div class="ritem"><b>'+t.name+'</b><span class="chip '+st[1]+'">'+st[0]+'</span><div style="margin-top:6px">'+t.task_id+'</div></div>';
+    }).join('');
+  }catch(e){$('#taskList').innerHTML='<div class="empty">加载失败</div>';}
+}
+$('#vectorRefresh').onclick=loadVector;
+$('#aclRefresh').onclick=loadAcl;
+$('#reviewRefresh').onclick=loadReviews;
+$('#taskRefresh').onclick=loadTasks;
+function loadPlatform(){loadVector();loadAcl();loadReviews();loadTasks();}
 </script>
 </body>
 </html>

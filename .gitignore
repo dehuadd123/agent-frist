@@ -12,3 +12,6 @@ Thumbs.db
 data/orders_runtime.json
 data/users.json
 data/persisted_docs.json
+data/vector_store.json
+data/review_tasks.json
+data/tasks.json

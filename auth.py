@@ -251,4 +251,8 @@ def route_level(method: str, path: str) -> int:
         return 2
     if path == "/api/audit":
         return 2  # 审计日志仅运营及以上
+    if path.startswith("/api/review/"):
+        return 2  # 人工审核队列：查看与裁决仅运营及以上
+    if path == "/api/tasks/cancel":
+        return 2  # 取消任务仅运营及以上
     return 1  # 其余只读接口，viewer 即可

@@ -568,3 +568,37 @@ API Key 解析优先级：**服务端 `DEEPSEEK_API_KEY` 环境变量 > 前端�
 ### 7.4 向量/索引持久化
 
 用户上传的文档实时落盘到 `data/persisted_docs.json`，服务重启后自动重新加载并重建混合检索索引，**上传内容与检索能力不因重启丢失**。内置语料与业务数据本就存于 JSON，天然持久。
+
+## 八、企业级平台六项能力（真实可用）
+
+在第七章安全底座之上，补齐六大生产级能力，全部零依赖、可真实运行：
+
+### 8.1 真实向量库 + 持久化（`retrieval/vectorstore.py`）
+
+- 稠密向量索引：确定性特征哈希生成 256 维向量 + L2 归一化，余弦相似度（点积）检索，embed 函数可插拔替换为 BGE/text-embedding 等真实模型。
+- 落盘持久化：`save()/load()` 原子写入 `data/vector_store.json`，重启 `load` 即恢复，无需重新嵌入。
+- 检索接入：`/api/rag/search` 的 `mode=dense` 走真实向量库（`backend: vectorstore`），与 BM25 组成混合检索。
+
+### 8.2 文档级 ACL 权限隔离（`acl.py`）
+
+文档粒度访问控制叠加在路由级 RBAC 之上：`public` / `owner 私有` / `角色白名单` 三级。上传文档默认 owner 私有（owner + admin + operator 可见），viewer 只见 public。检索、文档预览、Agent 证据全部经 `can_access` 过滤；`/api/acl/docs` 可查看每篇文档的 ACL 与当前角色可见性。
+
+### 8.3 增量索引 + 变更检测（`retrieval/vectorstore.py`）
+
+`add_document` 先做内容 SHA-256 指纹比对：**未变化直接跳过（不重索引）**，变化则先 `remove_document` 旧切片再 upsert，只对受影响文档重新嵌入，绝不全量重建。manifest 记录每篇文档的 `chunk_count / updated_at`，跨重启同样增量生效。
+
+### 8.4 真实 LLM Function Calling 闭环（`function_call.py` + `/api/llm/agent`）
+
+- `_llm_chat` 支持 `tools`/`tool_choice`，透出 `tool_calls`；`run_agent_loop` 多轮循环：LLM 决定调用 → 执行工具 → 回填 tool 结果 → 再推理，直到产出答案（含最大轮数/单轮工具数保护）。
+- 工具声明与执行复用同一份 `tools.REGISTRY`；写工具经 HITL 网关转人工审核后才放行。
+- 无 API Key 时降级确定性 Agent，保证可用。
+
+### 8.5 人工审核 HITL（`review.py` + `/api/review/*`）
+
+退款 `manual` 分支、金融合规拦截、写工具调用自动进入待审队列；`GET /api/review/queue` 查待审，`POST /api/review/approve|reject` 裁决（仅 operator+），全程落盘 `data/review_tasks.json` 留痕。
+
+### 8.6 异步任务队列（`taskqueue.py` + `/api/tasks/*`）
+
+标准库线程池 worker，状态机 `pending → running → done/failed`。`/api/rag/upload` 与 `/api/agent/run` 支持 `async:true` 立即返回 `task_id`，`GET /api/tasks/{id}` 轮询结果，`POST /api/tasks/cancel` 取消排队任务。
+
+> 前端入口：控制台新增「企业级平台」标签页，六项能力均有可视化面板。
